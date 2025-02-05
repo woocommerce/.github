@@ -1,4 +1,4 @@
-![Help us democratize commerce](https://github.com/woocommerce/.github/blob/trunk/images/democratize-commerce.png)
+![Help us democratize commerce](https://github.com/woocommerce/.github/blob/trunk/images/woo_share_image.png)
 
 **WooCommerce is Hiring!**
 

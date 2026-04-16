@@ -44,10 +44,18 @@ jobs:
       - name: Check team membership
         id: check-team
         run: |
+          echo "PR_USER: ${PR_USER}"
+          echo "ALLOWED_TEAMS: ${ALLOWED_TEAMS}"
+          echo "GH_TOKEN set: ${GH_TOKEN:+yes}"
           IFS=',' read -ra TEAMS <<< "$ALLOWED_TEAMS"
           for TEAM in "${TEAMS[@]}"; do
             TEAM=$(echo "$TEAM" | xargs)
-            STATUS=$(gh api "orgs/woocommerce/teams/${TEAM}/memberships/${PR_USER}" --jq '.state' 2>/dev/null || echo "not_found")
+            echo "Checking team: ${TEAM} for user: ${PR_USER}"
+            FULL_RESPONSE=$(gh api "orgs/woocommerce/teams/${TEAM}/memberships/${PR_USER}" 2>&1) && RC=$? || RC=$?
+            echo "Exit code: ${RC}"
+            echo "Response: ${FULL_RESPONSE}"
+            STATUS=$(echo "$FULL_RESPONSE" | jq -r '.state // "not_found"' 2>/dev/null || echo "parse_error")
+            echo "Parsed status: ${STATUS}"
             if [[ "$STATUS" == "active" ]]; then
               echo "is_member=true" >> "$GITHUB_OUTPUT"
               exit 0

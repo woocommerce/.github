@@ -1,6 +1,9 @@
 name: AI Code Review (Reusable)
 
 on:
+  # Temporary: pull_request trigger for testing on this repo's own PRs
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
   workflow_call:
     inputs:
       allowed_team:
@@ -29,20 +32,22 @@ jobs:
       github.event.pull_request.head.repo != null &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ inputs.timeout_minutes }}
+    timeout-minutes: ${{ inputs.timeout_minutes || 30 }}
     permissions:
       contents: read
       pull-requests: write
 
     steps:
-      - name: Check team membership
+      - name: Check user allowlist
         id: check-team
+        # Temporary: hardcoded user for testing. Revert to team membership check before merging.
         run: |
-          STATUS=$(gh api "orgs/woocommerce/teams/${ALLOWED_TEAM}/memberships/${PR_USER}" --jq '.state' 2>/dev/null || echo "not_found")
-          echo "is_member=$([[ "$STATUS" == "active" ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          if [[ "$PR_USER" == "mahangu" ]]; then
+            echo "is_member=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_member=false" >> "$GITHUB_OUTPUT"
+          fi
         env:
-          GH_TOKEN: ${{ github.token }}
-          ALLOWED_TEAM: ${{ inputs.allowed_team }}
           PR_USER: ${{ github.event.pull_request.user.login }}
 
       - name: Checkout repository
@@ -294,5 +299,5 @@ jobs:
             7. Submit: gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews" -X POST --input ai_review_payload.json
 
           claude_args: >
-            --model ${{ inputs.model }}
+            --model ${{ inputs.model || 'claude-opus-4-6' }}
             --allowedTools "Read,Glob,Grep,Write(ai_review_payload.json),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api:repos/*/pulls/*/reviews*),Bash(gh api:repos/*/pulls/*/comments*),Bash(git show:*),Bash(git diff:*),Bash(git log:*),Bash(git blame:*),Bash(git rev-parse:*),Bash(git ls-files:*),Bash(git grep:*)"

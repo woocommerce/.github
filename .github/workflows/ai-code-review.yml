@@ -22,7 +22,7 @@ on:
       AI_CODE_REVIEW_ANTHROPIC_API_KEY:
         required: true
       ORG_MEMBERS_READ_TOKEN:
-        required: false
+        required: true
 
 jobs:
   ai-review:
@@ -55,7 +55,7 @@ jobs:
           done
           echo "is_member=false" >> "$GITHUB_OUTPUT"
         env:
-          GH_TOKEN: ${{ secrets.ORG_MEMBERS_READ_TOKEN || github.token }}
+          GH_TOKEN: ${{ secrets.ORG_MEMBERS_READ_TOKEN }}
           ALLOWED_TEAMS: ${{ inputs.allowed_teams || 'happiness-engineers,qualityops' }}
           PR_USER: ${{ github.event.pull_request.user.login }}
 

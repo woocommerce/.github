@@ -28,6 +28,9 @@ jobs:
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo != null &&
       github.event.pull_request.head.repo.full_name == github.repository
+    concurrency:
+      group: ai-review-${{ github.repository }}-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout_minutes || 30 }}
     permissions:

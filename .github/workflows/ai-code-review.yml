@@ -162,7 +162,6 @@ jobs:
             OUTPUT RULES
             - At most ONE inline comment per file + line + concern. Merge related points into a single comment.
             - DO NOT post comments one at a time. Collect ALL comments, then submit as a SINGLE batched review (see POSTING COMMENTS below).
-            - If the HEAD commit is a merge commit (check with: git rev-parse HEAD^2), do not post any review. Simply stop.
 
             INLINE COMMENT FORMAT (for each comment in the batch)
             ```

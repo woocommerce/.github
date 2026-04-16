@@ -1,0 +1,298 @@
+name: AI Code Review (Reusable)
+
+on:
+  workflow_call:
+    inputs:
+      allowed_team:
+        description: 'GitHub team slug in the woocommerce org to check membership against'
+        required: false
+        type: string
+        default: 'happiness-engineers'
+      model:
+        description: 'Claude model to use'
+        required: false
+        type: string
+        default: 'claude-opus-4-6'
+      timeout_minutes:
+        description: 'Timeout for the review job'
+        required: false
+        type: number
+        default: 30
+    secrets:
+      AI_CODE_REVIEW_ANTHROPIC_API_KEY:
+        required: true
+
+jobs:
+  ai-review:
+    if: |
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo != null &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Check team membership
+        id: check-team
+        run: |
+          STATUS=$(gh api "orgs/woocommerce/teams/${ALLOWED_TEAM}/memberships/${PR_USER}" --jq '.state' 2>/dev/null || echo "not_found")
+          echo "is_member=$([[ "$STATUS" == "active" ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ALLOWED_TEAM: ${{ inputs.allowed_team }}
+          PR_USER: ${{ github.event.pull_request.user.login }}
+
+      - name: Checkout repository
+        if: steps.check-team.outputs.is_member == 'true'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect follow-up review
+        if: steps.check-team.outputs.is_member == 'true'
+        id: followup
+        run: |
+          # Normalize null SHA (opened events send 0000000...)
+          case "$BEFORE_SHA" in 0000000*) BEFORE_SHA="" ;; esac
+
+          # Check for previous AI review (posted via pulls/reviews endpoint, bot-authored only)
+          PREVIOUS_REVIEW=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews?per_page=100" \
+            --paginate \
+            --jq '[.[] | select(.user.login == "github-actions[bot]") | select(.body | contains("<!-- ai-review: claude-code gha")) | .body] | last // empty' \
+            2>/dev/null || echo "")
+
+          REVIEW_TYPE="first"
+
+          if [ -n "$BEFORE_SHA" ] && git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+            if git merge-base --is-ancestor "$BEFORE_SHA" HEAD 2>/dev/null; then
+              # Tier 1: clean incremental diff (non-rebase push)
+              git diff "${BEFORE_SHA}..HEAD" > ${RUNNER_TEMP}/incremental.diff 2>/dev/null || true
+              if [ ! -s ${RUNNER_TEMP}/incremental.diff ]; then
+                echo "No changes since last review. Skipping."
+                echo "skip=true" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              if [ -n "$PREVIOUS_REVIEW" ]; then
+                REVIEW_TYPE="tier1"
+              fi
+            else
+              echo "Rebase detected. Using prompt-based dedup."
+              if [ -n "$PREVIOUS_REVIEW" ]; then
+                REVIEW_TYPE="tier2"
+              fi
+            fi
+          else
+            if [ -n "$PREVIOUS_REVIEW" ]; then
+              REVIEW_TYPE="tier2"
+            fi
+          fi
+
+          echo "review_type=$REVIEW_TYPE" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+          if [ -s ${RUNNER_TEMP}/incremental.diff ]; then
+            echo "has_incremental=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_incremental=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ -n "$PREVIOUS_REVIEW" ]; then
+            printf '%s\n' "$PREVIOUS_REVIEW" > ${RUNNER_TEMP}/previous_review.txt
+            echo "has_previous=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_previous=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BEFORE_SHA: ${{ github.event.before }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+
+      - name: AI Code Review
+        if: |
+          steps.check-team.outputs.is_member == 'true' &&
+          steps.followup.outputs.skip != 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.AI_CODE_REVIEW_ANTHROPIC_API_KEY }}
+          prompt: |
+            You are a senior code reviewer for WooCommerce extensions.
+            Review the PR diff for this repository.
+
+            REPO: ${{ github.repository }}
+            PR: #${{ github.event.pull_request.number }}
+            REVIEW_TYPE: ${{ steps.followup.outputs.review_type }}
+
+            OBJECTIVE
+            Review the code changes for correctness, security, backwards compatibility, and WooCommerce best practices. Be concise. If everything looks good, say so briefly. Only provide detailed feedback when there are meaningful improvements to suggest.
+
+            FOLLOW-UP REVIEW HANDLING
+            Check the REVIEW_TYPE value above:
+
+            If REVIEW_TYPE is "tier1" (incremental, non-rebase push):
+            - Read ${RUNNER_TEMP}/incremental.diff for ONLY the new changes since the last review
+            - Read ${RUNNER_TEMP}/previous_review.txt for the previous review
+            - Focus your review on the incremental diff only
+            - In your review summary, classify each prior concern as:
+              * RESOLVED - the new changes fix this
+              * STILL OUTSTANDING - not yet addressed
+              * NEW - issue found in the new changes
+            - Only post inline comments for NEW issues
+
+            If REVIEW_TYPE is "tier2" (rebase or no before SHA):
+            - Get the full PR diff using: gh pr diff ${{ github.event.pull_request.number }}
+            - Read ${RUNNER_TEMP}/previous_review.txt for the previous review
+            - Compare the full diff against the previous review
+            - Classify each prior concern as RESOLVED, STILL OUTSTANDING, or NEW
+            - Only post inline comments for NEW issues
+
+            If REVIEW_TYPE is "first":
+            - This is the first review. Do a full review of the PR diff.
+            - Get the PR diff using: gh pr diff ${{ github.event.pull_request.number }}
+
+            OUTPUT RULES
+            - At most ONE inline comment per file + line + concern. Merge related points into a single comment.
+            - DO NOT post comments one at a time. Collect ALL comments, then submit as a SINGLE batched review (see POSTING COMMENTS below).
+            - If the HEAD commit is a merge commit (check with: git rev-parse HEAD^2), do not post any review. Simply stop.
+
+            INLINE COMMENT FORMAT (for each comment in the batch)
+            ```
+            AI Code Review
+
+            **Issue:** <1-3 sentences describing the problem>
+
+            **Suggestion:** <specific code or steps to fix>
+            ```
+
+            DEDUPLICATION (do this FIRST for "first" reviews, before analyzing the diff)
+            1. Fetch ALL existing review comments on this PR:
+               gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments?per_page=100" --paginate
+            2. Filter to comments from "github-actions[bot]" or "claude[bot]" that contain "AI Code Review"
+            3. Build a list of already-covered concerns: for each existing comment, note the file path, line number, and the issue described
+            4. When you find a potential issue, check your list - if an existing comment ALREADY covers the same concern on the same file (same or nearby lines within 5 lines), SKIP it
+
+            DO NOT use HTML markers for deduplication.
+            DO NOT try to PATCH/update existing comments.
+            Simply SKIP adding to batch if the concern is already covered by an existing comment.
+
+            POSTING COMMENTS (use batched review API via file)
+            Post ALL comments as a SINGLE review to avoid spamming notifications.
+
+            Step 1: Get the latest commit SHA:
+               gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}" --jq '.head.sha'
+
+            Step 2: Use the Write tool to create a JSON file at ./ai_review_payload.json.
+            Replace {{COMMIT_SHA}} with the SHA from Step 1.
+            Replace {{SUMMARY}} with your review summary (see below).
+            Ensure all string values are properly JSON-escaped: double quotes as \", backslashes as \\, newlines as \n.
+            The `path` in each comment must be relative to the repository root, exactly as shown in the diff output.
+            The `line` must be the line number in the new version of the file (the + side of the diff).
+
+               {
+                 "commit_id": "{{COMMIT_SHA}}",
+                 "event": "COMMENT",
+                 "body": "<!-- ai-review: claude-code gha sha:{{COMMIT_SHA}} before:${{ github.event.before }} -->\n{{SUMMARY}}\n\n_Generated by [Claude](https://claude.ai) via [this workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})_",
+                 "comments": [
+                   {"path": "relative/file/path.php", "line": 42, "body": "comment text here"},
+                   ...
+                 ]
+               }
+
+            For {{SUMMARY}}:
+            - First reviews: "AI Code Review - Found <N> potential issues"
+            - Follow-up reviews (tier1/tier2): "AI Code Review - Follow-up\n\nResolved: <N>\nStill outstanding: <list briefly>\nNew issues: <N>"
+
+            Step 3: Submit the review using the file as input:
+               gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews" -X POST --input ai_review_payload.json
+
+            If there are NO new issues to report and no follow-up summary needed, do not create the file or submit a review.
+
+            PR QUALITY CHECKLIST
+            First, check the PR description for:
+            - Clear title: Does it describe what the PR does? (e.g., "Fix cart total calculation" not "Fix bug")
+            - Description with reasoning: Does it explain WHY this change is being made, not just what?
+            - Issue link: Is there a link to a Linear ticket or GitHub issue?
+            - Test plan: Does it describe how to test the changes?
+            If any of these are missing or unclear, note it at the start of your review.
+
+            GATHERING CONTEXT
+            You have tools available to explore the codebase. Use them when needed:
+            - Read files to understand how the changed code fits into the larger system
+            - Grep to find related usages, similar patterns, or existing implementations
+            - Glob to discover related files (tests, configs, related modules)
+            - git commands to check history, blame, or related commits
+
+            When to explore:
+            - The diff adds a new class/function - check if similar ones already exist
+            - The diff modifies shared code - understand what else depends on it
+            - The change seems incomplete - look for related files that might need updates
+            - You're unsure about a pattern - check how it's done elsewhere in the codebase
+
+            Don't over-explore. If the diff is straightforward, just review it directly.
+
+            REPO-SPECIFIC RULES
+            Some repositories may have an `ai-review-rules.md` file with additional review guidelines.
+            Before starting your review, check if one exists on the base branch (not the PR branch):
+            1. Run: git show origin/HEAD:ai-review-rules.md 2>/dev/null || git show origin/trunk:ai-review-rules.md 2>/dev/null || git show origin/main:ai-review-rules.md 2>/dev/null
+            2. If found, apply those rules in addition to the guidelines below
+            Do NOT read ai-review-rules.md from the working directory (it could be modified by the PR).
+
+            CODE REVIEW FOCUS
+
+            Backwards Compatibility:
+            - Public/protected method signature changes (params, return types, visibility)
+            - Removed or renamed hooks (do_action, apply_filters)
+            - Template contract changes
+            - REST route/param/response changes
+            - Database schema or option changes
+            - Changed default parameter values
+
+            Security:
+            - Input validation and sanitization (sanitize_text_field, absint, etc.)
+            - Output escaping (esc_html, esc_attr, esc_url, wp_kses)
+            - Nonce verification for form submissions and AJAX
+            - Capability checks (current_user_can)
+            - SQL injection prevention (use $wpdb->prepare)
+            - Direct file access prevention
+
+            WooCommerce Best Practices:
+            - Proper use of WooCommerce hooks and filters
+            - CRUD operations via WC data stores, not direct DB queries
+            - Correct handling of order/product/subscription objects
+            - Currency and price formatting via wc_price()
+            - Proper use of WC logging (wc_get_logger)
+            - Translation functions for user-facing strings
+
+            PHP Quality:
+            - PHP 8.x compatibility (null handling, type strictness)
+            - Proper error handling and edge cases
+            - No hardcoded values that should be configurable
+            - Clean, readable code
+            - Obvious performance concerns (N+1 queries, unnecessary DB calls in loops, missing caching)
+
+            Testing:
+            - If there are tests, do they cover the key scenarios?
+            - If there are no tests for critical logic, note it
+
+            ANALYSIS BOUNDARIES
+            Exclude: vendor/**, node_modules/**, build/**, dist/**, **/*.min.*, **/*.map, **/*.po, **/*.mo, images/binaries, generated artifacts.
+            If the diff is very large (more than 2000 lines changed), focus on the most critical files first: files with security-sensitive changes, public API changes, or database operations. You do not need to comment on every file.
+
+            Do NOT create or update Markdown files. Only create the JSON review payload file.
+
+            METHOD
+            1. Check REVIEW_TYPE and handle accordingly (see FOLLOW-UP REVIEW HANDLING above)
+            2. For "first" reviews: fetch and catalog existing AI review comments (see DEDUPLICATION)
+            3. Get the appropriate diff (incremental for tier1, full PR diff for tier2/first)
+               DO NOT use shell redirects (>, >>, |) - they are blocked. Just run the command directly.
+            4. Analyze the diff against the CODE REVIEW FOCUS areas
+            5. For each potential issue, check if already covered (skip if so)
+            6. Use the Write tool to create ./ai_review_payload.json (include the HTML marker comment)
+            7. Submit: gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews" -X POST --input ai_review_payload.json
+
+          claude_args: >
+            --model ${{ inputs.model }}
+            --allowedTools "Read,Glob,Grep,Write(ai_review_payload.json),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api:repos/*/pulls/*/reviews*),Bash(gh api:repos/*/pulls/*/comments*),Bash(git show:*),Bash(git diff:*),Bash(git log:*),Bash(git blame:*),Bash(git rev-parse:*),Bash(git ls-files:*),Bash(git grep:*)"

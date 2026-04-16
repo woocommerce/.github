@@ -3,11 +3,11 @@ name: AI Code Review (Reusable)
 on:
   workflow_call:
     inputs:
-      allowed_teams:
-        description: 'Comma-separated GitHub team slugs in the woocommerce org to check membership against'
+      allowed_users:
+        description: 'JSON array of GitHub usernames allowed to trigger reviews'
         required: false
         type: string
-        default: 'happiness-engineers,qualityops'
+        default: '["mahangu","anant1811"]'
       model:
         description: 'Claude model to use'
         required: false
@@ -39,22 +39,16 @@ jobs:
       id-token: write
 
     steps:
-      - name: Check team membership
+      - name: Check allowed users
         id: check-team
         run: |
-          IFS=',' read -ra TEAMS <<< "$ALLOWED_TEAMS"
-          for TEAM in "${TEAMS[@]}"; do
-            TEAM=$(echo "$TEAM" | xargs)
-            STATUS=$(gh api "orgs/woocommerce/teams/${TEAM}/memberships/${PR_USER}" --jq '.state' 2>/dev/null || echo "not_found")
-            if [[ "$STATUS" == "active" ]]; then
-              echo "is_member=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          done
-          echo "is_member=false" >> "$GITHUB_OUTPUT"
+          ALLOWED='${{ inputs.allowed_users || '["mahangu","anant1811"]' }}'
+          if echo "$ALLOWED" | grep -q "\"${PR_USER}\""; then
+            echo "is_member=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_member=false" >> "$GITHUB_OUTPUT"
+          fi
         env:
-          GH_TOKEN: ${{ github.token }}
-          ALLOWED_TEAMS: ${{ inputs.allowed_teams || 'happiness-engineers,qualityops' }}
           PR_USER: ${{ github.event.pull_request.user.login }}
 
       - name: Checkout repository
@@ -81,8 +75,8 @@ jobs:
           if [ -n "$BEFORE_SHA" ] && git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
             if git merge-base --is-ancestor "$BEFORE_SHA" HEAD 2>/dev/null; then
               # Tier 1: clean incremental diff (non-rebase push)
-              git diff "${BEFORE_SHA}..HEAD" > ${RUNNER_TEMP}/incremental.diff 2>/dev/null || true
-              if [ ! -s ${RUNNER_TEMP}/incremental.diff ]; then
+              git diff "${BEFORE_SHA}..HEAD" > "${RUNNER_TEMP}/incremental.diff" 2>/dev/null || true
+              if [ ! -s "${RUNNER_TEMP}/incremental.diff" ]; then
                 echo "No changes since last review. Skipping."
                 echo "skip=true" >> "$GITHUB_OUTPUT"
                 exit 0
@@ -105,14 +99,14 @@ jobs:
           echo "review_type=$REVIEW_TYPE" >> "$GITHUB_OUTPUT"
           echo "skip=false" >> "$GITHUB_OUTPUT"
 
-          if [ -s ${RUNNER_TEMP}/incremental.diff ]; then
+          if [ -s "${RUNNER_TEMP}/incremental.diff" ]; then
             echo "has_incremental=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_incremental=false" >> "$GITHUB_OUTPUT"
           fi
 
           if [ -n "$PREVIOUS_REVIEW" ]; then
-            printf '%s\n' "$PREVIOUS_REVIEW" > ${RUNNER_TEMP}/previous_review.txt
+            printf '%s\n' "$PREVIOUS_REVIEW" > "${RUNNER_TEMP}/previous_review.txt"
             echo "has_previous=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_previous=false" >> "$GITHUB_OUTPUT"
@@ -145,8 +139,8 @@ jobs:
             Check the REVIEW_TYPE value above:
 
             If REVIEW_TYPE is "tier1" (incremental, non-rebase push):
-            - Read ${RUNNER_TEMP}/incremental.diff for ONLY the new changes since the last review
-            - Read ${RUNNER_TEMP}/previous_review.txt for the previous review
+            - Read "${RUNNER_TEMP}/incremental.diff" for ONLY the new changes since the last review
+            - Read "${RUNNER_TEMP}/previous_review.txt" for the previous review
             - Focus your review on the incremental diff only
             - In your review summary, classify each prior concern as:
               * RESOLVED - the new changes fix this
@@ -156,7 +150,7 @@ jobs:
 
             If REVIEW_TYPE is "tier2" (rebase or no before SHA):
             - Get the full PR diff using: gh pr diff ${{ github.event.pull_request.number }}
-            - Read ${RUNNER_TEMP}/previous_review.txt for the previous review
+            - Read "${RUNNER_TEMP}/previous_review.txt" for the previous review
             - Compare the full diff against the previous review
             - Classify each prior concern as RESOLVED, STILL OUTSTANDING, or NEW
             - Only post inline comments for NEW issues
@@ -307,4 +301,4 @@ jobs:
 
           claude_args: >
             --model ${{ inputs.model || 'claude-opus-4-6' }}
-            --allowedTools "Read,Glob,Grep,Write(ai_review_payload.json),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api:repos/*/pulls/*/reviews*),Bash(gh api:repos/*/pulls/*/comments*),Bash(git show:*),Bash(git diff:*),Bash(git log:*),Bash(git blame:*),Bash(git rev-parse:*),Bash(git ls-files:*),Bash(git grep:*)"
+            --allowedTools "Read(/home/runner/work/**),Glob,Grep,Write(ai_review_payload.json),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api:repos/*/pulls/*/reviews*),Bash(gh api:repos/*/pulls/*/comments*),Bash(git show:*),Bash(git diff:*),Bash(git log:*),Bash(git blame:*),Bash(git rev-parse:*),Bash(git ls-files:*),Bash(git grep:*)"

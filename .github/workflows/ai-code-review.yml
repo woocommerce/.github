@@ -1,6 +1,9 @@
 name: AI Code Review (Reusable)
 
 on:
+  # Temporary: for testing on this repo's own PRs. Remove before merging.
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
   workflow_call:
     inputs:
       allowed_team:
@@ -126,7 +129,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.AI_CODE_REVIEW_ANTHROPIC_API_KEY }}
-          github_token: ${{ secrets.GH_TOKEN_OVERRIDE || '' }}
+          github_token: ${{ secrets.GH_TOKEN_OVERRIDE || secrets.GH_TOKEN_OVERRIDE_MAHANGU || '' }}
           prompt: |
             You are a senior code reviewer for WooCommerce extensions.
             Review the PR diff for this repository.

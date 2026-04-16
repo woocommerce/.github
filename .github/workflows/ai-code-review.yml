@@ -1,9 +1,6 @@
 name: AI Code Review (Reusable)
 
 on:
-  # Temporary: pull_request trigger for testing on this repo's own PRs
-  pull_request:
-    types: [opened, synchronize, ready_for_review, reopened]
   workflow_call:
     inputs:
       allowed_team:
@@ -39,16 +36,14 @@ jobs:
       id-token: write
 
     steps:
-      - name: Check user allowlist
+      - name: Check team membership
         id: check-team
-        # Temporary: hardcoded user for testing. Revert to team membership check before merging.
         run: |
-          if [[ "$PR_USER" == "mahangu" ]]; then
-            echo "is_member=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "is_member=false" >> "$GITHUB_OUTPUT"
-          fi
+          STATUS=$(gh api "orgs/woocommerce/teams/${ALLOWED_TEAM}/memberships/${PR_USER}" --jq '.state' 2>/dev/null || echo "not_found")
+          echo "is_member=$([[ "$STATUS" == "active" ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
         env:
+          GH_TOKEN: ${{ github.token }}
+          ALLOWED_TEAM: ${{ inputs.allowed_team || 'happiness-engineers' }}
           PR_USER: ${{ github.event.pull_request.user.login }}
 
       - name: Checkout repository

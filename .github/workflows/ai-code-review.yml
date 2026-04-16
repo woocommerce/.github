@@ -21,6 +21,8 @@ on:
     secrets:
       AI_CODE_REVIEW_ANTHROPIC_API_KEY:
         required: true
+      GH_TOKEN_OVERRIDE:
+        required: false
 
 jobs:
   ai-review:
@@ -124,6 +126,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.AI_CODE_REVIEW_ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GH_TOKEN_OVERRIDE || '' }}
           prompt: |
             You are a senior code reviewer for WooCommerce extensions.
             Review the PR diff for this repository.

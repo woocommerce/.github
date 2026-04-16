@@ -3,11 +3,11 @@ name: AI Code Review (Reusable)
 on:
   workflow_call:
     inputs:
-      allowed_team:
-        description: 'GitHub team slug in the woocommerce org to check membership against'
+      allowed_teams:
+        description: 'Comma-separated GitHub team slugs in the woocommerce org to check membership against'
         required: false
         type: string
-        default: 'happiness-engineers'
+        default: 'happiness-engineers,qualityops'
       model:
         description: 'Claude model to use'
         required: false
@@ -39,11 +39,19 @@ jobs:
       - name: Check team membership
         id: check-team
         run: |
-          STATUS=$(gh api "orgs/woocommerce/teams/${ALLOWED_TEAM}/memberships/${PR_USER}" --jq '.state' 2>/dev/null || echo "not_found")
-          echo "is_member=$([[ "$STATUS" == "active" ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          IFS=',' read -ra TEAMS <<< "$ALLOWED_TEAMS"
+          for TEAM in "${TEAMS[@]}"; do
+            TEAM=$(echo "$TEAM" | xargs)
+            STATUS=$(gh api "orgs/woocommerce/teams/${TEAM}/memberships/${PR_USER}" --jq '.state' 2>/dev/null || echo "not_found")
+            if [[ "$STATUS" == "active" ]]; then
+              echo "is_member=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "is_member=false" >> "$GITHUB_OUTPUT"
         env:
           GH_TOKEN: ${{ github.token }}
-          ALLOWED_TEAM: ${{ inputs.allowed_team || 'happiness-engineers' }}
+          ALLOWED_TEAMS: ${{ inputs.allowed_teams || 'happiness-engineers,qualityops' }}
           PR_USER: ${{ github.event.pull_request.user.login }}
 
       - name: Checkout repository

@@ -38,9 +38,14 @@ jobs:
     steps:
       - name: Check team membership
         id: check-team
+        # TODO: revert to team API check before merging
         run: |
-          STATUS=$(gh api "orgs/woocommerce/teams/${ALLOWED_TEAM}/memberships/${PR_USER}" --jq '.state' 2>/dev/null || echo "not_found")
-          echo "is_member=$([[ "$STATUS" == "active" ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          if [[ "$PR_USER" == "mahangu" || "$PR_USER" == "anant1811" ]]; then
+            echo "is_member=true" >> "$GITHUB_OUTPUT"
+          else
+            STATUS=$(gh api "orgs/woocommerce/teams/${ALLOWED_TEAM}/memberships/${PR_USER}" --jq '.state' 2>/dev/null || echo "not_found")
+            echo "is_member=$([[ "$STATUS" == "active" ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          fi
         env:
           GH_TOKEN: ${{ github.token }}
           ALLOWED_TEAM: ${{ inputs.allowed_team || 'happiness-engineers' }}

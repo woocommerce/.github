@@ -124,7 +124,6 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.AI_CODE_REVIEW_ANTHROPIC_API_KEY }}
-          show_full_output: true
           prompt: |
             You are a senior code reviewer for WooCommerce extensions.
             Review the PR diff for this repository.
@@ -302,4 +301,4 @@ jobs:
 
           claude_args: >
             --model ${{ inputs.model || 'claude-opus-4-6' }}
-            --allowedTools "Read(/home/runner/work/**),Glob,Grep,Write(ai_review_payload.json),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api:repos/*/pulls/*/reviews*),Bash(gh api:repos/*/pulls/*/comments*),Bash(git show:*),Bash(git diff:*),Bash(git log:*),Bash(git blame:*),Bash(git rev-parse:*),Bash(git ls-files:*),Bash(git grep:*)"
+            --allowedTools "Read(/home/runner/work/**),Glob,Grep,Write,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api:*),Bash(git show:*),Bash(git diff:*),Bash(git log:*),Bash(git blame:*),Bash(git rev-parse:*),Bash(git ls-files:*),Bash(git grep:*)"

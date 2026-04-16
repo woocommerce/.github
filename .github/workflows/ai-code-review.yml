@@ -214,7 +214,7 @@ jobs:
             Step 3: Submit the review using the file as input:
                gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews" -X POST --input ai_review_payload.json
 
-            If there are NO new issues to report and no follow-up summary needed, do not create the file or submit a review.
+            ALWAYS post a review, even if no issues are found. If the code looks good, submit a review with an empty comments array and a summary like "AI Code Review - No issues found. The changes look good."
 
             PR QUALITY CHECKLIST
             First, check the PR description for:

@@ -39,7 +39,9 @@ jobs:
   # - Fork opening a PR back (e.g. eve/woocommerce-bookings into
   #   woocommerce/woocommerce-bookings): pull_request and pull_request_target
   #   events are delivered to the BASE repo, so github.repository_owner is
-  #   "woocommerce" and the guard passes.
+  #   "woocommerce" and the guard passes. Fork PRs are then excluded at the
+  #   ai-review job's same-repo if: condition
+  #   (github.event.pull_request.head.repo.full_name == github.repository).
   # - External fork of this workflow file (uses: evil/.github/...) runs
   #   independently in that org's context and does not invoke this repo.
   #

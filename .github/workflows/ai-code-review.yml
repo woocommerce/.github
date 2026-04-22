@@ -7,7 +7,7 @@ on:
         description: 'Comma-separated GitHub team slugs in the woocommerce org to check membership against'
         required: false
         type: string
-        default: 'happiness-engineers,qualityops'
+        default: 'automatticians,happiness-engineers,qualityops'
       model:
         description: 'Claude model to use'
         required: false
@@ -56,7 +56,7 @@ jobs:
           echo "is_member=false" >> "$GITHUB_OUTPUT"
         env:
           GH_TOKEN: ${{ secrets.ORG_MEMBERS_READ_TOKEN }}
-          ALLOWED_TEAMS: ${{ inputs.allowed_teams || 'happiness-engineers,qualityops' }}
+          ALLOWED_TEAMS: ${{ inputs.allowed_teams || 'automatticians,happiness-engineers,qualityops' }}
           PR_USER: ${{ github.event.pull_request.user.login }}
 
       - name: Checkout repository

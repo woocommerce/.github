@@ -4,10 +4,10 @@ on:
   workflow_call:
     inputs:
       allowed_teams:
-        description: 'Comma-separated GitHub team slugs in the woocommerce org to check membership against'
+        description: 'Deprecated. Team membership is no longer used for gating; AI review runs for any author with write/admin on the calling repo. Kept temporarily so existing callers do not hard-break; remove after the 17 pilot callers stop passing it.'
         required: false
         type: string
-        default: 'automatticians,happiness-engineers,qualityops'
+        default: ''
       model:
         description: 'Claude model to use'
         required: false
@@ -22,11 +22,31 @@ on:
       AI_CODE_REVIEW_ANTHROPIC_API_KEY:
         required: true
       ORG_MEMBERS_READ_TOKEN:
-        required: true
+        description: 'Deprecated. No longer used; write-permission gating uses the default GITHUB_TOKEN. Kept temporarily so existing callers do not hard-break; remove after the 17 pilot callers stop passing it.'
+        required: false
 
 jobs:
+  # Caller-org guard. Reject callers outside the allowed orgs before any
+  # further job runs. github.repository_owner in a reusable workflow refers
+  # to the caller and cannot be spoofed via inputs, env, or matrix.
+  guard:
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Reject callers outside allowed orgs
+        run: |
+          case "$CALLER_OWNER" in
+            woocommerce|mailpoet) ;;
+            *) echo "Caller $CALLER_REPO is not allowed." >&2; exit 1 ;;
+          esac
+        env:
+          CALLER_OWNER: ${{ github.repository_owner }}
+          CALLER_REPO: ${{ github.repository }}
+
   ai-review:
+    needs: guard
     if: |
+      (github.repository_owner == 'woocommerce' || github.repository_owner == 'mailpoet') &&
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo != null &&
       github.event.pull_request.head.repo.full_name == github.repository
@@ -41,23 +61,34 @@ jobs:
       id-token: write
 
     steps:
-      - name: Check team membership
+      # Author gating: allow PRs only from users with write or admin on the
+      # calling repo. This replaces the prior team-membership loop and covers
+      # all Automatticians with repo write plus external collaborators
+      # (e.g., Fueled contributors on woocommerce-bookings). Bots are rejected
+      # via github.event.pull_request.user.type. Note: permission returns only
+      # admin|write|read|none; maintain collapses to write, triage to read.
+      - name: Check write access
         id: check-team
         run: |
-          IFS=',' read -ra TEAMS <<< "$ALLOWED_TEAMS"
-          for TEAM in "${TEAMS[@]}"; do
-            TEAM=$(echo "$TEAM" | xargs)
-            STATUS=$(gh api "orgs/woocommerce/teams/${TEAM}/memberships/${PR_USER}" --jq '.state' 2>/dev/null || echo "not_found")
-            if [[ "$STATUS" == "active" ]]; then
+          if [[ "$PR_USER_TYPE" == "Bot" ]]; then
+            echo "Author $PR_USER is a Bot; denying review."
+            echo "is_member=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          PERM=$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${PR_USER}/permission" --jq '.permission' || echo "none")
+          case "$PERM" in
+            admin|write)
               echo "is_member=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          done
-          echo "is_member=false" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "Author $PR_USER has permission=$PERM; denying review."
+              echo "is_member=false" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
         env:
-          GH_TOKEN: ${{ secrets.ORG_MEMBERS_READ_TOKEN }}
-          ALLOWED_TEAMS: ${{ inputs.allowed_teams || 'automatticians,happiness-engineers,qualityops' }}
+          GH_TOKEN: ${{ github.token }}
           PR_USER: ${{ github.event.pull_request.user.login }}
+          PR_USER_TYPE: ${{ github.event.pull_request.user.type }}
 
       - name: Checkout repository
         if: steps.check-team.outputs.is_member == 'true'

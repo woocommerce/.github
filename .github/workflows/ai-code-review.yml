@@ -27,8 +27,26 @@ on:
 
 jobs:
   # Caller-org guard. Reject callers outside the allowed orgs before any
-  # further job runs. github.repository_owner in a reusable workflow refers
-  # to the caller and cannot be spoofed via inputs, env, or matrix.
+  # further job runs.
+  #
+  # Why this is safe: github.repository_owner and github.repository are
+  # populated by the runner from the triggering event of the caller's
+  # workflow run. They are not user-writable; caller inputs, env, secrets,
+  # and matrix values live in separate contexts (inputs.*, env.*, secrets.*,
+  # matrix.*) that do not feed into github.*.
+  #
+  # Edge cases:
+  # - Fork opening a PR back (e.g. eve/woocommerce-bookings into
+  #   woocommerce/woocommerce-bookings): pull_request and pull_request_target
+  #   events are delivered to the BASE repo, so github.repository_owner is
+  #   "woocommerce" and the guard passes.
+  # - External fork of this workflow file (uses: evil/.github/...) runs
+  #   independently in that org's context and does not invoke this repo.
+  #
+  # Docs:
+  # - Contexts reference: https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/accessing-contextual-information-about-workflow-runs
+  # - Reusing workflows: https://docs.github.com/en/actions/sharing-automations/reusing-workflows
+  # - Pull request events on forks: https://docs.github.com/en/actions/writing-workflows/choosing-when-your-workflow-runs/events-that-trigger-workflows#pull_request_target
   guard:
     runs-on: ubuntu-latest
     permissions: {}
@@ -65,8 +83,14 @@ jobs:
       # calling repo. This replaces the prior team-membership loop and covers
       # all Automatticians with repo write plus external collaborators
       # (e.g., Fueled contributors on woocommerce-bookings). Bots are rejected
-      # via github.event.pull_request.user.type. Note: permission returns only
-      # admin|write|read|none; maintain collapses to write, triage to read.
+      # via github.event.pull_request.user.type.
+      #
+      # Note: the permission endpoint returns only admin|write|read|none
+      # (maintain collapses to write, triage to read). The endpoint returns
+      # the highest computed access across direct/team/org/enterprise grants.
+      #
+      # Docs:
+      # - https://docs.github.com/en/rest/collaborators/collaborators#get-repository-permissions-for-a-user
       - name: Check write access
         id: check-team
         run: |

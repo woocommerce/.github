@@ -70,6 +70,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+      id-token: write
 
     steps:
       # Author gating: allow PRs only from users with write or admin on the

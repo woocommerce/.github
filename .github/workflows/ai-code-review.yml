@@ -3,11 +3,6 @@ name: AI Code Review (Reusable)
 on:
   workflow_call:
     inputs:
-      allowed_teams:
-        description: 'Deprecated. Team membership is no longer used for gating; AI review runs for any author with write/admin on the calling repo. Kept temporarily so existing callers do not hard-break; remove after the 17 pilot callers stop passing it.'
-        required: false
-        type: string
-        default: ''
       model:
         description: 'Claude model to use'
         required: false
@@ -21,9 +16,6 @@ on:
     secrets:
       AI_CODE_REVIEW_ANTHROPIC_API_KEY:
         required: true
-      ORG_MEMBERS_READ_TOKEN:
-        description: 'Deprecated. No longer used; write-permission gating uses the default GITHUB_TOKEN. Kept temporarily so existing callers do not hard-break; remove after the 17 pilot callers stop passing it.'
-        required: false
 
 jobs:
   # Caller-org guard. Reject callers outside the allowed orgs before any

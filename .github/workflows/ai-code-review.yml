@@ -108,11 +108,33 @@ jobs:
           PR_USER: ${{ github.event.pull_request.user.login }}
           PR_USER_TYPE: ${{ github.event.pull_request.user.type }}
 
+      # AGENTS.md / CLAUDE.md are bot instructions; skip review if a PR edits them
+      # so the bot doesn't review under guidance the PR itself is modifying.
+      - name: Skip AI review on trusted-instruction file edits
+        if: steps.check-team.outputs.is_member == 'true'
+        id: trusted_files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          FILES=$(gh pr diff "$PR_NUMBER" --repo "$REPO" --name-only)
+          if echo "$FILES" | grep -qiE '(^|/)(AGENTS|CLAUDE)\.md$'; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            gh pr comment "$PR_NUMBER" --repo "$REPO" --body \
+              "AI review skipped: this PR modifies \`AGENTS.md\` or \`CLAUDE.md\` files, which the review bot reads as instructions. Edits to these files require human review."
+            exit 1
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout repository
         if: steps.check-team.outputs.is_member == 'true'
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Detect follow-up review
         if: steps.check-team.outputs.is_member == 'true'
@@ -177,7 +199,8 @@ jobs:
       - name: AI Code Review
         if: |
           steps.check-team.outputs.is_member == 'true' &&
-          steps.followup.outputs.skip != 'true'
+          steps.followup.outputs.skip != 'true' &&
+          steps.trusted_files.outputs.skip == 'false'
         uses: anthropics/claude-code-action@567fe954a4527e81f132d87d1bdbcc94f7737434 # v1.0.107
         with:
           anthropic_api_key: ${{ secrets.AI_CODE_REVIEW_ANTHROPIC_API_KEY }}

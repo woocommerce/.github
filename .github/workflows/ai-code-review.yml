@@ -141,6 +141,7 @@ jobs:
         if: steps.check-team.outputs.is_member == 'true'
         id: followup
         run: |
+          set -uo pipefail
           # Normalize null SHA (opened events send 0000000...)
           case "$BEFORE_SHA" in 0000000*) BEFORE_SHA="" ;; esac
 
@@ -150,7 +151,7 @@ jobs:
           PREVIOUS_REVIEW_OBJ=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews?per_page=100" \
             --paginate \
             --jq '[.[] | select(.user.login == "github-actions[bot]") | select(.body | contains("<!-- ai-review: claude-code gha"))] | last // empty' \
-            2>/dev/null || echo "")
+            2>/dev/null || { echo "warn: previous-review fetch failed (treating as no previous review)" >&2; echo ""; })
 
           PREVIOUS_REVIEW=""
           PREV_REVIEW_AT=""
@@ -209,11 +210,19 @@ jobs:
           # `gh api` responses are coerced to `[]` before reaching jq so a
           # transient API hiccup can't hard-fail the step.
           AUTHOR_REPLIES_FILE="${RUNNER_TEMP}/author-replies.md"
+          AUTHOR_REPLIES_MAX_BYTES=65536  # 64 KiB cap to bound prompt-injection surface from a verbose author
           if [ -n "$PREV_REVIEW_AT" ] && [ -n "$PR_AUTHOR" ]; then
-            ISSUE_JSON=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" --paginate 2>/dev/null || echo "[]")
-            INLINE_JSON=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/comments?per_page=100" --paginate 2>/dev/null || echo "[]")
-            printf '%s' "$ISSUE_JSON"  | jq -e . >/dev/null 2>&1 || ISSUE_JSON='[]'
-            printf '%s' "$INLINE_JSON" | jq -e . >/dev/null 2>&1 || INLINE_JSON='[]'
+            ISSUE_JSON=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" --paginate 2>/dev/null \
+              || { echo "warn: issue-comments fetch failed (treating as none)" >&2; echo "[]"; })
+            INLINE_JSON=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/comments?per_page=100" --paginate 2>/dev/null \
+              || { echo "warn: inline-comments fetch failed (treating as none)" >&2; echo "[]"; })
+            # Validate before --argjson. `gh api --paginate` can emit concatenated
+            # arrays (`[...][...]`) which is not valid JSON; fall through to `[]`.
+            printf '%s' "$ISSUE_JSON"  | jq -e . >/dev/null 2>&1 || { echo "warn: issue-comments JSON invalid, dropping" >&2; ISSUE_JSON='[]'; }
+            printf '%s' "$INLINE_JSON" | jq -e . >/dev/null 2>&1 || { echo "warn: inline-comments JSON invalid, dropping" >&2; INLINE_JSON='[]'; }
+            # `.created_at` (issue + inline endpoints) is ISO-8601 UTC `Z`; strict
+            # lexicographic `>` is correct and excludes the prior-review boundary.
+            # Comments missing `.created_at` sort under `null` and are filtered out.
             jq -n \
               --argjson issue "$ISSUE_JSON" \
               --argjson inline "$INLINE_JSON" \
@@ -237,6 +246,12 @@ jobs:
                   ) | add
                 )
               end' > "$AUTHOR_REPLIES_FILE"
+            # Truncate to the size cap. Adds a marker so the model knows it was clipped.
+            if [ "$(wc -c < "$AUTHOR_REPLIES_FILE" | tr -d ' ')" -gt "$AUTHOR_REPLIES_MAX_BYTES" ]; then
+              head -c "$AUTHOR_REPLIES_MAX_BYTES" "$AUTHOR_REPLIES_FILE" > "${AUTHOR_REPLIES_FILE}.tmp"
+              printf '\n\n--- (truncated at %s bytes) ---\n' "$AUTHOR_REPLIES_MAX_BYTES" >> "${AUTHOR_REPLIES_FILE}.tmp"
+              mv "${AUTHOR_REPLIES_FILE}.tmp" "$AUTHOR_REPLIES_FILE"
+            fi
             echo "has_author_replies=true" >> "$GITHUB_OUTPUT"
           else
             : > "$AUTHOR_REPLIES_FILE"

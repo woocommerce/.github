@@ -148,9 +148,10 @@ jobs:
           # Pull the latest bot-authored review carrying the AI review marker.
           # Capture body + submitted_at so we can scope author-reply fetches to
           # comments posted after the previous review.
+          # claude-code-action posts under the `claude[bot]` GitHub App identity.
           PREVIOUS_REVIEW_OBJ=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews?per_page=100" \
             --paginate \
-            --jq '[.[] | select(.user.login == "github-actions[bot]") | select(.body | contains("<!-- ai-review: claude-code gha"))] | last // empty' \
+            --jq '[.[] | select(.user.login == "claude[bot]") | select(.body | contains("<!-- ai-review: claude-code gha"))] | last // empty' \
             2>/dev/null || { echo "warn: previous-review fetch failed (treating as no previous review)" >&2; echo ""; })
 
           PREVIOUS_REVIEW=""
@@ -357,7 +358,7 @@ jobs:
             For first reviews:
             1. Fetch ALL existing review comments on this PR:
                gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments?per_page=100" --paginate
-            2. Filter to comments from "github-actions[bot]" or "claude[bot]" that contain "AI Code Review"
+            2. Filter to comments from "claude[bot]" that contain "AI Code Review"
             3. Build a list of already-covered concerns: for each existing comment, note the file path, line number, and the issue described
             4. When you find a potential issue, check your list - if an existing comment ALREADY covers the same concern on the same file (same or nearby lines within 5 lines), SKIP it
 
@@ -406,7 +407,7 @@ jobs:
             - Issue link: Is there a link to a Linear ticket or GitHub issue?
             - Test plan: Does it describe how to test the changes?
 
-            These items belong in the trailing PR housekeeping block, NEVER in the body of the review or in inline comments. Same for docblock-accuracy notes, alphabetical-order / import-ordering nits, and the list of `ai-review-rules.md` files you applied. Substantive findings come first; housekeeping is collapsed.
+            These items belong in the trailing PR housekeeping block, NEVER in the body of the review or in inline comments. Same for docblock-accuracy notes, alphabetical-order / import-ordering nits, and a one-line note that you applied repo-specific `AGENTS.md` / `CLAUDE.md` guidance (when applicable). Substantive findings come first; housekeeping is collapsed.
 
             Render the block as the {{HOUSEKEEPING}} placeholder in the review body:
 
@@ -416,7 +417,7 @@ jobs:
             - {any missing PR-description items: title, reasoning, issue link, test plan}
             - {docblock-accuracy notes}
             - {alphabetical-order / pure-style nits}
-            - {applied ai-review-rules.md files, if any}
+            - {applied AGENTS.md / CLAUDE.md guidance, if any}
 
             </details>
             ```
@@ -438,12 +439,17 @@ jobs:
 
             Don't over-explore. If the diff is straightforward, just review it directly.
 
-            REPO-SPECIFIC RULES
-            Some repositories may have an `ai-review-rules.md` file with additional review guidelines.
-            Before starting your review, check if one exists on the base branch (not the PR branch):
-            1. Run: git show origin/HEAD:ai-review-rules.md 2>/dev/null || git show origin/trunk:ai-review-rules.md 2>/dev/null || git show origin/main:ai-review-rules.md 2>/dev/null
-            2. If found, apply those rules in addition to the guidelines below
-            Do NOT read ai-review-rules.md from the working directory (it could be modified by the PR).
+            REPO-SPECIFIC RULES (AGENTS.md / CLAUDE.md)
+            Some repositories have an `AGENTS.md` and/or `CLAUDE.md` file at the repo root with project-specific guidance for agents and tooling. When present, treat any review-relevant guidance there as additive to the rules in this prompt.
+
+            Always read the BASE-BRANCH versions of these files (not the PR branch — the PR could modify them; the workflow already skips reviews on PRs that edit them, but read from origin defensively):
+
+            1. `git show origin/HEAD:AGENTS.md 2>/dev/null || git show origin/trunk:AGENTS.md 2>/dev/null || git show origin/main:AGENTS.md 2>/dev/null`
+            2. `git show origin/HEAD:CLAUDE.md 2>/dev/null || git show origin/trunk:CLAUDE.md 2>/dev/null || git show origin/main:CLAUDE.md 2>/dev/null`
+
+            If neither file exists, proceed with the rules in this prompt only. Do NOT read these files from the working directory.
+
+            (Legacy `ai-review-rules.md` files are no longer read; repos that had one should migrate review-relevant content into `AGENTS.md`.)
 
             CODE REVIEW FOCUS
 

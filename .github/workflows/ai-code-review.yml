@@ -141,14 +141,24 @@ jobs:
         if: steps.check-team.outputs.is_member == 'true'
         id: followup
         run: |
+          set -uo pipefail
           # Normalize null SHA (opened events send 0000000...)
           case "$BEFORE_SHA" in 0000000*) BEFORE_SHA="" ;; esac
 
-          # Check for previous AI review (posted via pulls/reviews endpoint, bot-authored only)
-          PREVIOUS_REVIEW=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews?per_page=100" \
+          # Pull the latest bot-authored review carrying the AI review marker.
+          # Capture body + submitted_at so we can scope author-reply fetches to
+          # comments posted after the previous review.
+          PREVIOUS_REVIEW_OBJ=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews?per_page=100" \
             --paginate \
-            --jq '[.[] | select(.user.login == "github-actions[bot]") | select(.body | contains("<!-- ai-review: claude-code gha")) | .body] | last // empty' \
-            2>/dev/null || echo "")
+            --jq '[.[] | select(.user.login == "github-actions[bot]") | select(.body | contains("<!-- ai-review: claude-code gha"))] | last // empty' \
+            2>/dev/null || { echo "warn: previous-review fetch failed (treating as no previous review)" >&2; echo ""; })
+
+          PREVIOUS_REVIEW=""
+          PREV_REVIEW_AT=""
+          if [ -n "$PREVIOUS_REVIEW_OBJ" ]; then
+            PREVIOUS_REVIEW=$(printf '%s' "$PREVIOUS_REVIEW_OBJ" | jq -r '.body // ""')
+            PREV_REVIEW_AT=$(printf '%s' "$PREVIOUS_REVIEW_OBJ" | jq -r '.submitted_at // .created_at // ""')
+          fi
 
           REVIEW_TYPE="first"
 
@@ -191,11 +201,68 @@ jobs:
           else
             echo "has_previous=false" >> "$GITHUB_OUTPUT"
           fi
+
+          # Fetch author replies posted after the previous review. Combines
+          # issue comments (replies on the bot's review block) + inline review
+          # comments (replies on changed lines). Restricted to the PR author
+          # so a non-author commenter cannot post `@claude rejected:` markers
+          # and override findings on the next review pass. Empty / non-JSON
+          # `gh api` responses are coerced to `[]` before reaching jq so a
+          # transient API hiccup can't hard-fail the step.
+          AUTHOR_REPLIES_FILE="${RUNNER_TEMP}/author-replies.md"
+          AUTHOR_REPLIES_MAX_BYTES=65536  # 64 KiB cap to bound prompt-injection surface from a verbose author
+          if [ -n "$PREV_REVIEW_AT" ] && [ -n "$PR_AUTHOR" ]; then
+            ISSUE_JSON=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" --paginate 2>/dev/null \
+              || { echo "warn: issue-comments fetch failed (treating as none)" >&2; echo "[]"; })
+            INLINE_JSON=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/comments?per_page=100" --paginate 2>/dev/null \
+              || { echo "warn: inline-comments fetch failed (treating as none)" >&2; echo "[]"; })
+            # Validate before --argjson. `gh api --paginate` can emit concatenated
+            # arrays (`[...][...]`) which is not valid JSON; fall through to `[]`.
+            printf '%s' "$ISSUE_JSON"  | jq -e . >/dev/null 2>&1 || { echo "warn: issue-comments JSON invalid, dropping" >&2; ISSUE_JSON='[]'; }
+            printf '%s' "$INLINE_JSON" | jq -e . >/dev/null 2>&1 || { echo "warn: inline-comments JSON invalid, dropping" >&2; INLINE_JSON='[]'; }
+            # `.created_at` (issue + inline endpoints) is ISO-8601 UTC `Z`; strict
+            # lexicographic `>` is correct and excludes the prior-review boundary.
+            # Comments missing `.created_at` sort under `null` and are filtered out.
+            jq -n \
+              --argjson issue "$ISSUE_JSON" \
+              --argjson inline "$INLINE_JSON" \
+              --arg since "$PREV_REVIEW_AT" \
+              --arg author "$PR_AUTHOR" '
+              def tag(k): map(. + {_kind: k});
+              ($issue | tag("issue")) + ($inline | tag("inline"))
+              | map(select((.user.login // "") == $author))
+              | map(select(.created_at > $since))
+              | sort_by(.created_at)
+              | if length == 0 then "(no author replies since the previous review)\n"
+                else (
+                  map(
+                    "--- @\(.user.login) on \(.created_at) (\(._kind)" +
+                    (if ._kind == "inline" then
+                      (if .path then " \(.path)" else "" end) +
+                      (if .line then ":\(.line | tostring)" else "" end) +
+                      (if .in_reply_to_id then " in_reply_to:\(.in_reply_to_id | tostring)" else "" end)
+                     else "" end) +
+                    ")\n\n\((.body // "") | sub("[[:space:]]+$"; ""))\n\n"
+                  ) | add
+                )
+              end' > "$AUTHOR_REPLIES_FILE"
+            # Truncate to the size cap. Adds a marker so the model knows it was clipped.
+            if [ "$(wc -c < "$AUTHOR_REPLIES_FILE" | tr -d ' ')" -gt "$AUTHOR_REPLIES_MAX_BYTES" ]; then
+              head -c "$AUTHOR_REPLIES_MAX_BYTES" "$AUTHOR_REPLIES_FILE" > "${AUTHOR_REPLIES_FILE}.tmp"
+              printf '\n\n--- (truncated at %s bytes) ---\n' "$AUTHOR_REPLIES_MAX_BYTES" >> "${AUTHOR_REPLIES_FILE}.tmp"
+              mv "${AUTHOR_REPLIES_FILE}.tmp" "$AUTHOR_REPLIES_FILE"
+            fi
+            echo "has_author_replies=true" >> "$GITHUB_OUTPUT"
+          else
+            : > "$AUTHOR_REPLIES_FILE"
+            echo "has_author_replies=false" >> "$GITHUB_OUTPUT"
+          fi
         env:
           GH_TOKEN: ${{ github.token }}
           BEFORE_SHA: ${{ github.event.before }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
 
       - name: AI Code Review
         if: |
@@ -222,23 +289,45 @@ jobs:
             If REVIEW_TYPE is "tier1" (incremental, non-rebase push):
             - Read "${RUNNER_TEMP}/incremental.diff" for ONLY the new changes since the last review
             - Read "${RUNNER_TEMP}/previous_review.txt" for the previous review
+            - Read "${RUNNER_TEMP}/author-replies.md" for author replies posted since the previous review
             - Focus your review on the incremental diff only
-            - In your review summary, classify each prior concern as:
-              * RESOLVED - the new changes fix this
-              * STILL OUTSTANDING - not yet addressed
-              * NEW - issue found in the new changes
+            - Produce a per-issue reconciliation (see PER-ISSUE RECONCILIATION below). Do not re-derive findings from a fresh read of the diff.
             - Only post inline comments for NEW issues
 
             If REVIEW_TYPE is "tier2" (rebase or no before SHA):
             - Get the full PR diff using: gh pr diff ${{ github.event.pull_request.number }}
             - Read "${RUNNER_TEMP}/previous_review.txt" for the previous review
-            - Compare the full diff against the previous review
-            - Classify each prior concern as RESOLVED, STILL OUTSTANDING, or NEW
+            - Read "${RUNNER_TEMP}/author-replies.md" for author replies posted since the previous review
+            - Produce a per-issue reconciliation (see PER-ISSUE RECONCILIATION below). Do not re-derive findings from a fresh read of the diff.
             - Only post inline comments for NEW issues
 
             If REVIEW_TYPE is "first":
             - This is the first review. Do a full review of the PR diff.
             - Get the PR diff using: gh pr diff ${{ github.event.pull_request.number }}
+
+            PER-ISSUE RECONCILIATION (tier1/tier2 only)
+            Enumerate EACH prior issue from the previous review. Don't summarize across them. Mark each with one of:
+            - `resolved` - the issue is addressed by the new changes
+            - `still-open` - the issue remains
+            - `obsolete` - the issue no longer applies (rejected with reason, or the affected code is gone)
+
+            Use the prior review as ground truth for what was already said. Do NOT re-read the diff fresh and re-derive findings from scratch.
+
+            HONOURING AUTHOR REPLIES (tier1/tier2 only)
+            Read "${RUNNER_TEMP}/author-replies.md". Replies containing these markers are the strongest signal when classifying prior issues:
+            - `@claude addressed` - mark `resolved` ONLY if the diff is consistent with the claimed fix. If the diff doesn't show the fix, mark `still-open` and note the disagreement explicitly: "Author replied addressed but the change isn't visible in the diff, please confirm." Don't quietly ignore the reply, and don't quietly mark resolved against the diff.
+            - `@claude rejected: <reason>` - mark `obsolete`. Quote the reason verbatim. Do not re-assert the finding.
+            - `@claude not-applicable` - mark `obsolete`. Brief acknowledgement, no re-litigation.
+
+            If multiple replies conflict, prefer the most recent.
+
+            FINDING LABELS
+            Tag every finding with exactly one of these scope labels:
+            - `[fix here]` - should be addressed in this PR. Correctness, security, deploy-safety, missing-thing, broken contract.
+            - `[follow-up]` - legitimate concern but cross-cutting / refactor / rewrite ask. The author can defensibly defer it to a separate PR.
+            - `[nit]` - style or minor preference. The author can ignore without consequence.
+
+            Default to `[fix here]` for correctness, security, and deploy-safety findings regardless of fix locality. Use `[follow-up]` only when the fix requires a structural rewrite the PR explicitly is not doing, or touches code outside the PR's stated scope.
 
             OUTPUT RULES
             - At most ONE inline comment per file + line + concern. Merge related points into a single comment.
@@ -246,7 +335,7 @@ jobs:
 
             INLINE COMMENT FORMAT (for each comment in the batch)
             ```
-            AI Code Review
+            AI Code Review [fix here|follow-up|nit]
 
             **Issue:** <1-3 sentences describing the problem>
 
@@ -262,7 +351,10 @@ jobs:
             - For follow-up reviews (tier1/tier2), only investigate comments posted AFTER the last AI review (compare timestamps)
             This is where you add the most value: humans flag concerns but may not have time to fully investigate. You do.
 
-            DEDUPLICATION (do this FIRST for "first" reviews, before analyzing the diff)
+            DEDUPLICATION (FIRST reviews only — skip this section for tier1/tier2)
+            On tier1/tier2 the inline pass is already restricted to NEW issues by OUTPUT RULES, and the per-issue reconciliation reuses the prior review as ground truth, so re-fetching existing inline comments is unnecessary and would interfere with reconciliation.
+
+            For first reviews:
             1. Fetch ALL existing review comments on this PR:
                gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments?per_page=100" --paginate
             2. Filter to comments from "github-actions[bot]" or "claude[bot]" that contain "AI Code Review"
@@ -289,7 +381,7 @@ jobs:
                {
                  "commit_id": "{{COMMIT_SHA}}",
                  "event": "COMMENT",
-                 "body": "<!-- ai-review: claude-code gha sha:{{COMMIT_SHA}} before:${{ github.event.before }} -->\n{{SUMMARY}}\n\n---\n<sub>This is an automatic review{{FOLLOW_UP_TAG}} | Model: <code>${{ inputs.model || 'claude-opus-4-6' }}</code> | <a href=\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\">Workflow run</a></sub>",
+                 "body": "<!-- ai-review: claude-code gha sha:{{COMMIT_SHA}} before:${{ github.event.before }} -->\n{{SUMMARY}}\n{{HOUSEKEEPING}}\n\n---\n<!-- ai-review-footer -->\n<sub>Automatic review{{FOLLOW_UP_TAG}} · <code>${{ inputs.model || 'claude-opus-4-6' }}</code> · <a href=\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\">Workflow run</a></sub>\n\n<details><summary><sub>How to reply to a finding</sub></summary>\n\nReply on this review (or inline at the line the finding refers to) with one of:\n\n- `@claude addressed` - I made the change. Bot verifies against the next diff before marking resolved.\n- `@claude rejected: <reason>` - Will not fix; reason gets quoted on the next review.\n- `@claude not-applicable` - Finding does not apply (wrong file, already covered elsewhere, etc.).\n\nThe bot honours these on the next review pass.\n\n</details>",
                  "comments": [
                    {"path": "relative/file/path.php", "line": 42, "body": "comment text here"},
                    ...
@@ -297,22 +389,39 @@ jobs:
                }
 
             For {{SUMMARY}}:
-            - First reviews: "AI Code Review - Found <N> potential issues"
-            - Follow-up reviews (tier1/tier2): "AI Code Review - Follow-up\n\nResolved: <N>\nStill outstanding: <list briefly>\nNew issues: <N>"
+            - First reviews: "AI Code Review - Found <N> potential issues" (or "No issues found" if none)
+            - Follow-up reviews (tier1/tier2): "AI Code Review - Follow-up" followed by the per-issue reconciliation list (each prior issue on its own line as `- <issue ref>: resolved | still-open | obsolete - <one-line note>`) and then "New issues: <N>"
             For {{FOLLOW_UP_TAG}}: replace with " (follow-up)" for tier1/tier2 reviews, or "" (empty) for first reviews.
+            For {{HOUSEKEEPING}}: render the trailing PR-housekeeping block (see PR HOUSEKEEPING below). Empty string if there is nothing to put in it.
 
             Step 3: Submit the review using the file as input:
                gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews" -X POST --input ai_review_payload.json
 
             ALWAYS post a review, even if no issues are found. If the code looks good, submit a review with an empty comments array and a summary like "AI Code Review - No issues found. The changes look good."
 
-            PR QUALITY CHECKLIST
-            First, check the PR description for:
+            PR HOUSEKEEPING
+            Check the PR description for:
             - Clear title: Does it describe what the PR does? (e.g., "Fix cart total calculation" not "Fix bug")
             - Description with reasoning: Does it explain WHY this change is being made, not just what?
             - Issue link: Is there a link to a Linear ticket or GitHub issue?
             - Test plan: Does it describe how to test the changes?
-            If any of these are missing or unclear, note it at the start of your review.
+
+            These items belong in the trailing PR housekeeping block, NEVER in the body of the review or in inline comments. Same for docblock-accuracy notes, alphabetical-order / import-ordering nits, and the list of `ai-review-rules.md` files you applied. Substantive findings come first; housekeeping is collapsed.
+
+            Render the block as the {{HOUSEKEEPING}} placeholder in the review body:
+
+            ```
+            <details><summary>PR housekeeping</summary>
+
+            - {any missing PR-description items: title, reasoning, issue link, test plan}
+            - {docblock-accuracy notes}
+            - {alphabetical-order / pure-style nits}
+            - {applied ai-review-rules.md files, if any}
+
+            </details>
+            ```
+
+            If there is nothing to put in the block, omit it (replace {{HOUSEKEEPING}} with an empty string). NEVER lead the review with PR-process or style feedback.
 
             GATHERING CONTEXT
             You have tools available to explore the codebase. Use them when needed:
@@ -382,12 +491,14 @@ jobs:
             METHOD
             1. Check REVIEW_TYPE and handle accordingly (see FOLLOW-UP REVIEW HANDLING above)
             2. For "first" reviews: fetch and catalog existing AI review comments (see DEDUPLICATION)
-            3. Get the appropriate diff (incremental for tier1, full PR diff for tier2/first)
+            3. For tier1/tier2: read previous_review.txt + author-replies.md, build the per-issue reconciliation BEFORE looking at new findings
+            4. Get the appropriate diff (incremental for tier1, full PR diff for tier2/first)
                DO NOT use shell redirects (>, >>, |) - they are blocked. Just run the command directly.
-            4. Analyze the diff against the CODE REVIEW FOCUS areas
-            5. For each potential issue, check if already covered (skip if so)
-            6. Use the Write tool to create ./ai_review_payload.json (include the HTML marker comment)
-            7. Submit: gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews" -X POST --input ai_review_payload.json
+            5. Analyze the diff against the CODE REVIEW FOCUS areas; label every finding [fix here] / [follow-up] / [nit]
+            6. For each potential issue, check if already covered (skip if so)
+            7. Build the {{SUMMARY}} (per-issue reconciliation lines for tier1/tier2, or counts for first) and the {{HOUSEKEEPING}} block (or empty)
+            8. Use the Write tool to create ./ai_review_payload.json (include the HTML marker comment, the footer sentinel, and the cheat-sheet block exactly as shown)
+            9. Submit: gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews" -X POST --input ai_review_payload.json
 
           claude_args: >
             --model ${{ inputs.model || 'claude-opus-4-6' }}

@@ -203,19 +203,25 @@ jobs:
 
           # Fetch author replies posted after the previous review. Combines
           # issue comments (replies on the bot's review block) + inline review
-          # comments (replies on changed lines). Filters bots out by login
-          # suffix so repeated runs don't ingest their own marker output.
+          # comments (replies on changed lines). Restricted to the PR author
+          # so a non-author commenter cannot post `@claude rejected:` markers
+          # and override findings on the next review pass. Empty / non-JSON
+          # `gh api` responses are coerced to `[]` before reaching jq so a
+          # transient API hiccup can't hard-fail the step.
           AUTHOR_REPLIES_FILE="${RUNNER_TEMP}/author-replies.md"
-          if [ -n "$PREV_REVIEW_AT" ]; then
+          if [ -n "$PREV_REVIEW_AT" ] && [ -n "$PR_AUTHOR" ]; then
             ISSUE_JSON=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" --paginate 2>/dev/null || echo "[]")
             INLINE_JSON=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/comments?per_page=100" --paginate 2>/dev/null || echo "[]")
+            printf '%s' "$ISSUE_JSON"  | jq -e . >/dev/null 2>&1 || ISSUE_JSON='[]'
+            printf '%s' "$INLINE_JSON" | jq -e . >/dev/null 2>&1 || INLINE_JSON='[]'
             jq -n \
-              --argjson issue "${ISSUE_JSON:-[]}" \
-              --argjson inline "${INLINE_JSON:-[]}" \
-              --arg since "$PREV_REVIEW_AT" '
+              --argjson issue "$ISSUE_JSON" \
+              --argjson inline "$INLINE_JSON" \
+              --arg since "$PREV_REVIEW_AT" \
+              --arg author "$PR_AUTHOR" '
               def tag(k): map(. + {_kind: k});
               ($issue | tag("issue")) + ($inline | tag("inline"))
-              | map(select((.user.login // "") | test("\\[bot\\]$") | not))
+              | map(select((.user.login // "") == $author))
               | map(select(.created_at > $since))
               | sort_by(.created_at)
               | if length == 0 then "(no author replies since the previous review)\n"
@@ -241,6 +247,7 @@ jobs:
           BEFORE_SHA: ${{ github.event.before }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
 
       - name: AI Code Review
         if: |
@@ -305,7 +312,7 @@ jobs:
             - `[follow-up]` - legitimate concern but cross-cutting / refactor / rewrite ask. The author can defensibly defer it to a separate PR.
             - `[nit]` - style or minor preference. The author can ignore without consequence.
 
-            Default to `[fix here]` ONLY when the diff in front of you is the right place to fix it. If addressing the issue properly would require touching code outside the diff, or rewriting a structure the PR isn't trying to change, label it `[follow-up]`.
+            Default to `[fix here]` for correctness, security, and deploy-safety findings regardless of fix locality. Use `[follow-up]` only when the fix requires a structural rewrite the PR explicitly is not doing, or touches code outside the PR's stated scope.
 
             OUTPUT RULES
             - At most ONE inline comment per file + line + concern. Merge related points into a single comment.
@@ -329,7 +336,10 @@ jobs:
             - For follow-up reviews (tier1/tier2), only investigate comments posted AFTER the last AI review (compare timestamps)
             This is where you add the most value: humans flag concerns but may not have time to fully investigate. You do.
 
-            DEDUPLICATION (do this FIRST for "first" reviews, before analyzing the diff)
+            DEDUPLICATION (FIRST reviews only — skip this section for tier1/tier2)
+            On tier1/tier2 the inline pass is already restricted to NEW issues by OUTPUT RULES, and the per-issue reconciliation reuses the prior review as ground truth, so re-fetching existing inline comments is unnecessary and would interfere with reconciliation.
+
+            For first reviews:
             1. Fetch ALL existing review comments on this PR:
                gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments?per_page=100" --paginate
             2. Filter to comments from "github-actions[bot]" or "claude[bot]" that contain "AI Code Review"

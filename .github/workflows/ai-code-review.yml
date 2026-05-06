@@ -58,13 +58,23 @@ jobs:
   ai-review:
     needs: guard
     if: |
-      github.event.action != 'synchronize' &&
       (github.repository_owner == 'woocommerce' || github.repository_owner == 'mailpoet') &&
-      github.event.pull_request.draft == false &&
-      github.event.pull_request.head.repo != null &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      (
+        (github.event_name == 'pull_request' &&
+         github.event.action != 'synchronize' &&
+         github.event.pull_request.head.repo != null &&
+         github.event.pull_request.head.repo.full_name == github.repository) ||
+        (github.event_name == 'issue_comment' &&
+         github.event.issue.pull_request != null &&
+         github.event.issue.state == 'open')
+      )
     concurrency:
-      group: ai-review-${{ github.repository }}-${{ github.event.pull_request.number }}
+      # Namespace by event so a comment-triggered re-review does not cancel
+      # an in-flight pull_request-triggered first review (and vice versa).
+      # NOTE: concurrency expressions are evaluated before the job's env
+      # block materializes, so we inline the PR-number shim instead of
+      # using ${{ env.PR_NUMBER }} (which would resolve to empty here).
+      group: ai-review-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number }}-${{ github.event_name }}
       cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout_minutes || 30 }}
@@ -72,42 +82,136 @@ jobs:
       contents: read
       pull-requests: write
       id-token: write
+    env:
+      # Event-shape shim: lift PR identifiers once so steps and the inline
+      # prompt below stay readable.
+      PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+      PR_AUTHOR: ${{ github.event.pull_request.user.login || github.event.issue.user.login }}
+      REPO: ${{ github.repository }}
 
     steps:
-      # Author gating: allow PRs only from users with write or admin on the
-      # calling repo. This replaces the prior team-membership loop and covers
-      # all Automatticians with repo write plus external collaborators
-      # (e.g., Fueled contributors on woocommerce-bookings). Bots are rejected
-      # via github.event.pull_request.user.type.
+      # Trigger validation. issue_comment fires on every comment in the repo;
+      # only proceed if the body matches the bot trigger and the issue is a PR.
+      # COMMENT_BODY comes from event metadata, never from PR HEAD content,
+      # so it is safe to grep against here.
+      - name: Validate trigger
+        id: trigger
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          IS_PR_COMMENT: ${{ github.event.issue.pull_request != null }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "issue_comment" ]; then
+            if [ "$IS_PR_COMMENT" != "true" ]; then
+              echo "Comment is on an issue, not a PR; skipping."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            # Strip CRLF so Windows-clipboard / GitHub-mobile bodies match.
+            # Pattern: line starts with optional whitespace, then @claude or
+            # /claude, then 'review', then end-of-line / whitespace / punctuation.
+            # Permits trailing punctuation (`@claude review.`) and trailing
+            # text (`@claude review please`) but rejects `@claude reviewer` and
+            # markdown prefixes (`## @claude review`, `- @claude review`).
+            CLEAN_BODY=${COMMENT_BODY//$'\r'/}
+            if ! printf '%s\n' "$CLEAN_BODY" | grep -qiE '^[[:space:]]*[@/]claude[[:space:]]+review([[:space:]]|[[:punct:]]|$)'; then
+              echo "Comment did not match @claude review or /claude review trigger; skipping."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      # Defense-in-depth fork rejection. The job-level if: rejects forks on
+      # the pull_request path; issue_comment payloads do not include
+      # head.repo, so we look it up via gh pr view and compare here. exit 1
+      # fails the job before any secret-using model invocation.
+      - name: Reject fork PRs
+        if: steps.trigger.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          set -euo pipefail
+          if [ -n "$PR_HEAD_REPO" ]; then
+            HEAD_REPO="$PR_HEAD_REPO"
+          else
+            HEAD_REPO=$(gh pr view "$PR_NUMBER" --repo "$REPO" \
+              --json headRepositoryOwner,headRepository \
+              --jq 'if .headRepository == null or .headRepositoryOwner == null
+                    then "DELETED-OR-UNKNOWN"
+                    else "\(.headRepositoryOwner.login)/\(.headRepository.name)" end')
+          fi
+          if [ "$HEAD_REPO" != "$REPO" ]; then
+            echo "::error::Fork PR rejected. Head repo: $HEAD_REPO, base: $REPO."
+            exit 1
+          fi
+
+      # Author and sender gating: allow runs only when the PR author has
+      # write or admin on the calling repo, AND on issue_comment events,
+      # the comment sender also has write or admin. Both checks are needed
+      # because issue_comment fires from the default branch with secrets in
+      # scope, so any commenter on a PR could otherwise trigger a review.
+      # Bots are rejected via the user.type field.
       #
-      # Note: the permission endpoint returns only admin|write|read|none
-      # (maintain collapses to write, triage to read). The endpoint returns
-      # the highest computed access across direct/team/org/enterprise grants.
+      # The permission endpoint returns only admin|write|read|none (maintain
+      # collapses to write, triage to read). It returns the highest computed
+      # access across direct/team/org/enterprise grants.
       #
       # Docs:
       # - https://docs.github.com/en/rest/collaborators/collaborators#get-repository-permissions-for-a-user
       - name: Check write access
         id: check-team
+        if: steps.trigger.outputs.skip != 'true'
         run: |
-          if [[ "$PR_USER_TYPE" == "Bot" ]]; then
-            echo "Author $PR_USER is a Bot; denying review."
+          set -euo pipefail
+          : "${PR_AUTHOR:?PR_AUTHOR is empty; refusing to query collaborators with empty login}"
+
+          if [[ "$PR_AUTHOR_TYPE" == "Bot" ]]; then
+            echo "Author $PR_AUTHOR is a Bot; denying review."
             echo "is_member=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          PERM=$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${PR_USER}/permission" --jq '.permission' || echo "none")
-          case "$PERM" in
-            admin|write)
-              echo "is_member=true" >> "$GITHUB_OUTPUT"
-              ;;
+          PR_PERM=$(gh api "repos/${REPO}/collaborators/${PR_AUTHOR}/permission" --jq '.permission' 2>${RUNNER_TEMP}/gh.err || echo "none")
+          PR_PERM=${PR_PERM:-none}
+          case "$PR_PERM" in
+            admin|write) ;;
             *)
-              echo "Author $PR_USER has permission=$PERM; denying review."
+              echo "Author $PR_AUTHOR has permission=$PR_PERM; denying review."
+              [ -s ${RUNNER_TEMP}/gh.err ] && cat ${RUNNER_TEMP}/gh.err >&2
               echo "is_member=false" >> "$GITHUB_OUTPUT"
+              exit 0
               ;;
           esac
+
+          if [ "$EVENT_NAME" = "issue_comment" ]; then
+            : "${SENDER:?SENDER is empty on issue_comment event}"
+            if [[ "$SENDER_TYPE" == "Bot" ]]; then
+              echo "Comment sender $SENDER is a Bot; denying review."
+              echo "is_member=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            SENDER_PERM=$(gh api "repos/${REPO}/collaborators/${SENDER}/permission" --jq '.permission' 2>${RUNNER_TEMP}/gh.err || echo "none")
+            SENDER_PERM=${SENDER_PERM:-none}
+            case "$SENDER_PERM" in
+              admin|write) ;;
+              *)
+                echo "Comment sender $SENDER has permission=$SENDER_PERM; denying review."
+                [ -s ${RUNNER_TEMP}/gh.err ] && cat ${RUNNER_TEMP}/gh.err >&2
+                echo "is_member=false" >> "$GITHUB_OUTPUT"
+                exit 0
+                ;;
+            esac
+          fi
+
+          echo "is_member=true" >> "$GITHUB_OUTPUT"
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_USER: ${{ github.event.pull_request.user.login }}
-          PR_USER_TYPE: ${{ github.event.pull_request.user.type }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type || github.event.issue.user.type }}
+          SENDER: ${{ github.event.comment.user.login }}
+          SENDER_TYPE: ${{ github.event.comment.user.type }}
 
       # AGENTS.md / CLAUDE.md are bot instructions; skip review if a PR edits them
       # so the bot doesn't review under guidance the PR itself is modifying.
@@ -116,8 +220,6 @@ jobs:
         id: trusted_files
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           FILES=$(gh pr diff "$PR_NUMBER" --repo "$REPO" --name-only)
@@ -261,9 +363,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           BEFORE_SHA: ${{ github.event.before }}
-          REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
 
       - name: AI Code Review
         if: |
@@ -278,7 +377,7 @@ jobs:
             Review the PR diff for this repository.
 
             REPO: ${{ github.repository }}
-            PR: #${{ github.event.pull_request.number }}
+            PR: #${{ env.PR_NUMBER }}
             REVIEW_TYPE: ${{ steps.followup.outputs.review_type }}
 
             OBJECTIVE
@@ -296,7 +395,7 @@ jobs:
             - Only post inline comments for NEW issues
 
             If REVIEW_TYPE is "tier2" (rebase or no before SHA):
-            - Get the full PR diff using: gh pr diff ${{ github.event.pull_request.number }}
+            - Get the full PR diff using: gh pr diff ${{ env.PR_NUMBER }}
             - Read "${RUNNER_TEMP}/previous_review.txt" for the previous review
             - Read "${RUNNER_TEMP}/author-replies.md" for author replies posted since the previous review
             - Produce a per-issue reconciliation (see PER-ISSUE RECONCILIATION below). Do not re-derive findings from a fresh read of the diff.
@@ -304,7 +403,7 @@ jobs:
 
             If REVIEW_TYPE is "first":
             - This is the first review. Do a full review of the PR diff.
-            - Get the PR diff using: gh pr diff ${{ github.event.pull_request.number }}
+            - Get the PR diff using: gh pr diff ${{ env.PR_NUMBER }}
 
             PER-ISSUE RECONCILIATION (tier1/tier2 only)
             Enumerate EACH prior issue from the previous review. Don't summarize across them. Mark each with one of:
@@ -345,7 +444,7 @@ jobs:
 
             HUMAN REVIEW INVESTIGATION
             Before analyzing the diff, read existing human and bot review comments on this PR:
-               gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews?per_page=100" --paginate
+               gh api "repos/${{ github.repository }}/pulls/${{ env.PR_NUMBER }}/reviews?per_page=100" --paginate
             For each concern raised by a human or bot reviewer (excluding your own previous AI reviews):
             - Investigate it using the codebase: trace code paths, check how affected functions are used, verify the concern with evidence
             - Include your findings in your review: confirm, refute, or expand on each concern with specific code references
@@ -357,7 +456,7 @@ jobs:
 
             For first reviews:
             1. Fetch ALL existing review comments on this PR:
-               gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments?per_page=100" --paginate
+               gh api "repos/${{ github.repository }}/pulls/${{ env.PR_NUMBER }}/comments?per_page=100" --paginate
             2. Filter to comments from "claude[bot]" that contain "AI Code Review"
             3. Build a list of already-covered concerns: for each existing comment, note the file path, line number, and the issue described
             4. When you find a potential issue, check your list - if an existing comment ALREADY covers the same concern on the same file (same or nearby lines within 5 lines), SKIP it
@@ -370,7 +469,7 @@ jobs:
             Post ALL comments as a SINGLE review to avoid spamming notifications.
 
             Step 1: Get the latest commit SHA:
-               gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}" --jq '.head.sha'
+               gh api "repos/${{ github.repository }}/pulls/${{ env.PR_NUMBER }}" --jq '.head.sha'
 
             Step 2: Use the Write tool to create a JSON file at ./ai_review_payload.json.
             Replace {{COMMIT_SHA}} with the SHA from Step 1.
@@ -396,7 +495,7 @@ jobs:
             For {{HOUSEKEEPING}}: render the trailing PR-housekeeping block (see PR HOUSEKEEPING below). Empty string if there is nothing to put in it.
 
             Step 3: Submit the review using the file as input:
-               gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews" -X POST --input ai_review_payload.json
+               gh api "repos/${{ github.repository }}/pulls/${{ env.PR_NUMBER }}/reviews" -X POST --input ai_review_payload.json
 
             ALWAYS post a review, even if no issues are found. If the code looks good, submit a review with an empty comments array and a summary like "AI Code Review - No issues found. The changes look good."
 
@@ -504,7 +603,7 @@ jobs:
             6. For each potential issue, check if already covered (skip if so)
             7. Build the {{SUMMARY}} (per-issue reconciliation lines for tier1/tier2, or counts for first) and the {{HOUSEKEEPING}} block (or empty)
             8. Use the Write tool to create ./ai_review_payload.json (include the HTML marker comment, the footer sentinel, and the cheat-sheet block exactly as shown)
-            9. Submit: gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews" -X POST --input ai_review_payload.json
+            9. Submit: gh api "repos/${{ github.repository }}/pulls/${{ env.PR_NUMBER }}/reviews" -X POST --input ai_review_payload.json
 
           claude_args: >
             --model ${{ inputs.model || 'claude-opus-4-6' }}

@@ -97,9 +97,11 @@ jobs:
               echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            # Accept `@claude review` and `@claude /review` (line-anchored, optional trailing punctuation).
+            # Accept `@claude review` / `@claude /review`, optionally with one trailing
+            # sentence-ending punct (`.`, `!`, `?`). Reject anything else after the
+            # trigger so a body like `@claude /review;rm -rf` does not match.
             CLEAN_BODY=${COMMENT_BODY//$'\r'/}
-            if ! printf '%s\n' "$CLEAN_BODY" | grep -qiE '^[[:space:]]*@claude[[:space:]]+/?review([[:space:]]|[[:punct:]]|$)'; then
+            if ! printf '%s\n' "$CLEAN_BODY" | grep -qiE '^[[:space:]]*@claude[[:space:]]+/?review[.!?]?[[:space:]]*$'; then
               echo "Comment did not match @claude review or @claude /review trigger; skipping."
               echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0

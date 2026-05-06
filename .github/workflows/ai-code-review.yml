@@ -69,11 +69,7 @@ jobs:
          github.event.issue.state == 'open')
       )
     concurrency:
-      # Namespace by event so a comment-triggered re-review does not cancel
-      # an in-flight pull_request-triggered first review (and vice versa).
-      # NOTE: concurrency expressions are evaluated before the job's env
-      # block materializes, so we inline the PR-number shim instead of
-      # using ${{ github.event.pull_request.number || github.event.issue.number }} (which would resolve to empty here).
+      # Per-event namespace so a comment trigger does not cancel an in-flight first review.
       group: ai-review-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number }}-${{ github.event_name }}
       cancel-in-progress: true
     runs-on: ubuntu-latest
@@ -84,10 +80,8 @@ jobs:
       id-token: write
 
     steps:
-      # Trigger validation. issue_comment fires on every comment in the repo;
-      # only proceed if the body matches the bot trigger and the issue is a PR.
-      # COMMENT_BODY comes from event metadata, never from PR HEAD content,
-      # so it is safe to grep against here.
+      # Gate issue_comment runs to PR comments matching the bot trigger.
+      # COMMENT_BODY is event metadata, safe to grep here.
       - name: Validate trigger
         id: trigger
         env:
@@ -102,17 +96,7 @@ jobs:
               echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            # Strip CRLF so Windows-clipboard / GitHub-mobile bodies match.
-            # Pattern: line starts with optional whitespace, then `@claude`,
-            # then whitespace, then optional `/`, then `review`, then
-            # end-of-line / whitespace / punctuation.
-            # Accepted: `@claude review`, `@claude /review` (matches the
-            # wp-calypso bot convention), `@claude review.`,
-            # `@claude /review please`.
-            # Rejected: `@claude reviewer` (next char must be space/punct/EOL),
-            # `## @claude review` / `- @claude review` (markdown prefixes are
-            # punct, not space, before `@`), bare `review`, mid-line forms
-            # like `please @claude review this`.
+            # Accept `@claude review` and `@claude /review` (line-anchored, optional trailing punctuation).
             CLEAN_BODY=${COMMENT_BODY//$'\r'/}
             if ! printf '%s\n' "$CLEAN_BODY" | grep -qiE '^[[:space:]]*@claude[[:space:]]+/?review([[:space:]]|[[:punct:]]|$)'; then
               echo "Comment did not match @claude review or @claude /review trigger; skipping."
@@ -122,10 +106,7 @@ jobs:
           fi
           echo "skip=false" >> "$GITHUB_OUTPUT"
 
-      # Defense-in-depth fork rejection. The job-level if: rejects forks on
-      # the pull_request path; issue_comment payloads do not include
-      # head.repo, so we look it up via gh pr view and compare here. exit 1
-      # fails the job before any secret-using model invocation.
+      # Fork reject. issue_comment payloads lack head.repo, so look it up.
       - name: Reject fork PRs
         if: steps.trigger.outputs.skip != 'true'
         env:
@@ -148,19 +129,9 @@ jobs:
             exit 1
           fi
 
-      # Author and sender gating: allow runs only when the PR author has
-      # write or admin on the calling repo, AND on issue_comment events,
-      # the comment sender also has write or admin. Both checks are needed
-      # because issue_comment fires from the default branch with secrets in
-      # scope, so any commenter on a PR could otherwise trigger a review.
-      # Bots are rejected via the user.type field.
-      #
-      # The permission endpoint returns only admin|write|read|none (maintain
-      # collapses to write, triage to read). It returns the highest computed
-      # access across direct/team/org/enterprise grants.
-      #
-      # Docs:
-      # - https://docs.github.com/en/rest/collaborators/collaborators#get-repository-permissions-for-a-user
+      # PR author and (on issue_comment) comment sender must both have admin|write.
+      # Permission API returns admin|write|read|none.
+      # https://docs.github.com/en/rest/collaborators/collaborators#get-repository-permissions-for-a-user
       - name: Check write access
         id: check-team
         if: steps.trigger.outputs.skip != 'true'

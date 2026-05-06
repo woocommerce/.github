@@ -168,13 +168,13 @@ jobs:
             echo "is_member=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          PR_PERM=$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${PR_AUTHOR}/permission" --jq '.permission' 2>${RUNNER_TEMP}/gh.err || echo "none")
+          PR_PERM=$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${PR_AUTHOR}/permission" --jq '.permission' 2>"${RUNNER_TEMP}/gh.err" || echo "none")
           PR_PERM=${PR_PERM:-none}
           case "$PR_PERM" in
             admin|write) ;;
             *)
               echo "Author $PR_AUTHOR has permission=$PR_PERM; denying review."
-              [ -s ${RUNNER_TEMP}/gh.err ] && cat ${RUNNER_TEMP}/gh.err >&2
+              [ -s "${RUNNER_TEMP}/gh.err" ] && cat "${RUNNER_TEMP}/gh.err" >&2
               echo "is_member=false" >> "$GITHUB_OUTPUT"
               exit 0
               ;;
@@ -187,13 +187,13 @@ jobs:
               echo "is_member=false" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            SENDER_PERM=$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${SENDER}/permission" --jq '.permission' 2>${RUNNER_TEMP}/gh.err || echo "none")
+            SENDER_PERM=$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${SENDER}/permission" --jq '.permission' 2>"${RUNNER_TEMP}/gh.err" || echo "none")
             SENDER_PERM=${SENDER_PERM:-none}
             case "$SENDER_PERM" in
               admin|write) ;;
               *)
                 echo "Comment sender $SENDER has permission=$SENDER_PERM; denying review."
-                [ -s ${RUNNER_TEMP}/gh.err ] && cat ${RUNNER_TEMP}/gh.err >&2
+                [ -s "${RUNNER_TEMP}/gh.err" ] && cat "${RUNNER_TEMP}/gh.err" >&2
                 echo "is_member=false" >> "$GITHUB_OUTPUT"
                 exit 0
                 ;;

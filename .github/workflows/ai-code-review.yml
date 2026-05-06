@@ -103,14 +103,19 @@ jobs:
               exit 0
             fi
             # Strip CRLF so Windows-clipboard / GitHub-mobile bodies match.
-            # Pattern: line starts with optional whitespace, then @claude or
-            # /claude, then 'review', then end-of-line / whitespace / punctuation.
-            # Permits trailing punctuation (`@claude review.`) and trailing
-            # text (`@claude review please`) but rejects `@claude reviewer` and
-            # markdown prefixes (`## @claude review`, `- @claude review`).
+            # Pattern: line starts with optional whitespace, then `@claude`,
+            # then whitespace, then optional `/`, then `review`, then
+            # end-of-line / whitespace / punctuation.
+            # Accepted: `@claude review`, `@claude /review` (matches the
+            # wp-calypso bot convention), `@claude review.`,
+            # `@claude /review please`.
+            # Rejected: `@claude reviewer` (next char must be space/punct/EOL),
+            # `## @claude review` / `- @claude review` (markdown prefixes are
+            # punct, not space, before `@`), bare `review`, mid-line forms
+            # like `please @claude review this`.
             CLEAN_BODY=${COMMENT_BODY//$'\r'/}
-            if ! printf '%s\n' "$CLEAN_BODY" | grep -qiE '^[[:space:]]*[@/]claude[[:space:]]+review([[:space:]]|[[:punct:]]|$)'; then
-              echo "Comment did not match @claude review or /claude review trigger; skipping."
+            if ! printf '%s\n' "$CLEAN_BODY" | grep -qiE '^[[:space:]]*@claude[[:space:]]+/?review([[:space:]]|[[:punct:]]|$)'; then
+              echo "Comment did not match @claude review or @claude /review trigger; skipping."
               echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi

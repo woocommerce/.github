@@ -16,6 +16,8 @@ on:
     secrets:
       AI_CODE_REVIEW_ANTHROPIC_API_KEY:
         required: true
+      AI_REVIEW_TELEMETRY_TOKEN:
+        required: false
 
 jobs:
   # Caller-org guard. Reject callers outside the allowed orgs before any
@@ -345,6 +347,7 @@ jobs:
           PR_AUTHOR: ${{ github.event.pull_request.user.login || github.event.issue.user.login }}
 
       - name: AI Code Review
+        id: ai-review
         if: |
           steps.check-team.outputs.is_member == 'true' &&
           steps.followup.outputs.skip != 'true' &&
@@ -587,4 +590,95 @@ jobs:
 
           claude_args: >
             --model ${{ inputs.model || 'claude-opus-4-6' }}
-            --allowedTools "Read(/home/runner/work/**),Glob,Grep,Write,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api:*),Bash(git show:*),Bash(git diff:*),Bash(git log:*),Bash(git blame:*),Bash(git rev-parse:*),Bash(git ls-files:*),Bash(git grep:*)"
+            --allowedTools "Read(/home/runner/work/**),Glob,Grep,Write(./ai_review_payload.json),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api:*),Bash(git show:*),Bash(git diff:*),Bash(git log:*),Bash(git blame:*),Bash(git rev-parse:*),Bash(git ls-files:*),Bash(git grep:*)"
+
+      - name: Send telemetry to wpcom
+        if: always() && steps.ai-review.outputs.execution_file != ''
+        continue-on-error: true
+        env:
+          TELEMETRY_TOKEN: ${{ secrets.AI_REVIEW_TELEMETRY_TOKEN }}
+          EXECUTION_FILE: ${{ steps.ai-review.outputs.execution_file }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          T_SOURCE: ${{ github.repository_owner }}
+          T_REPO: ${{ github.repository }}
+          T_PR: ${{ github.event.pull_request.number || github.event.issue.number }}
+          T_PR_AUTHOR: ${{ github.event.pull_request.user.login || github.event.issue.user.login }}
+          T_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          T_MODEL: ${{ inputs.model || 'claude-opus-4-6' }}
+          T_BUILD_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          T_REVIEW_TYPE: ${{ steps.followup.outputs.review_type }}
+        shell: bash
+        run: |
+          if [ ! -s "$EXECUTION_FILE" ]; then
+            echo "telemetry: execution_file missing or empty, skipping"
+            exit 0
+          fi
+
+          if ! RESULT=$(jq 'map(select(.type == "result")) | last' "$EXECUTION_FILE" 2>/dev/null); then
+            echo "telemetry: failed to parse execution_file, skipping"
+            exit 0
+          fi
+
+          if [ "$RESULT" = "null" ] || [ -z "$RESULT" ]; then
+            OUTCOME="no_result"
+            RESULT="null"
+          else
+            SUBTYPE=$(echo "$RESULT" | jq -r '.subtype')
+            case "$SUBTYPE" in
+              success)              OUTCOME="success" ;;
+              error_max_turns)      OUTCOME="error_max_turns" ;;
+              *)                    OUTCOME="is_error" ;;
+            esac
+          fi
+
+          # issue_comment payload is issue-shaped (no pull_request.head), so
+          # head sha is empty on comment-triggered runs. Fall back to gh CLI.
+          if [ -z "$T_PR_HEAD_SHA" ] && [ -n "$T_PR" ]; then
+            T_PR_HEAD_SHA=$(gh pr view "$T_PR" --repo "$T_REPO" --json headRefOid --jq .headRefOid 2>/dev/null || echo "")
+          fi
+
+          PAYLOAD=$(echo "$RESULT" | jq \
+            --arg source          "$T_SOURCE" \
+            --arg outcome         "$OUTCOME" \
+            --arg repo            "$T_REPO" \
+            --arg pr              "$T_PR" \
+            --arg pr_author       "$T_PR_AUTHOR" \
+            --arg pr_head_sha     "$T_PR_HEAD_SHA" \
+            --arg model           "$T_MODEL" \
+            --arg build_url       "$T_BUILD_URL" \
+            --arg ci_provider     "github_actions" \
+            --arg is_followup     "$( [ "$T_REVIEW_TYPE" != "first" ] && echo true || echo false )" \
+            '{
+              source:          $source,
+              outcome:         $outcome,
+              repo:            $repo,
+              pr:              $pr,
+              pr_author:       $pr_author,
+              pr_head_sha:     $pr_head_sha,
+              model:           $model,
+              build_url:       $build_url,
+              ci_provider:     $ci_provider,
+              is_followup:     ($is_followup == "true"),
+              cost_usd:        (.total_cost_usd // 0),
+              duration:        ((.duration_ms // 0) / 1000),
+              api_duration_ms: (.duration_api_ms // 0),
+              num_turns:       (.num_turns // 0),
+              tokens_in:       (.usage.input_tokens // 0),
+              tokens_out:      (.usage.output_tokens // 0),
+              cache_read:      (.usage.cache_read_input_tokens // 0),
+              cache_creation:  (.usage.cache_creation_input_tokens // 0),
+              session_id:      (.session_id // ""),
+              ttft_ms:         (.ttft_ms // 0)
+            }')
+
+          HTTP_STATUS=$(curl -s -o /tmp/telemetry_response -w "%{http_code}" -X POST \
+            "https://public-api.wordpress.com/wpcom/v2/ai-review/telemetry" \
+            -H "Content-Type: application/json" \
+            -H "X-AI-Review-Token: ${TELEMETRY_TOKEN}" \
+            -d "$PAYLOAD")
+          echo "telemetry: HTTP $HTTP_STATUS"
+          if [ "$HTTP_STATUS" -lt 200 ] || [ "$HTTP_STATUS" -ge 300 ]; then
+            echo "::warning::Failed to send AI review telemetry (HTTP $HTTP_STATUS)"
+            echo "telemetry response body:"
+            cat /tmp/telemetry_response || true
+          fi

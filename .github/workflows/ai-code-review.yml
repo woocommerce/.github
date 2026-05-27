@@ -590,7 +590,7 @@ jobs:
 
           claude_args: >
             --model ${{ inputs.model || 'claude-opus-4-6' }}
-            --allowedTools "Read(/home/runner/work/**),Glob,Grep,Write,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api:*),Bash(git show:*),Bash(git diff:*),Bash(git log:*),Bash(git blame:*),Bash(git rev-parse:*),Bash(git ls-files:*),Bash(git grep:*)"
+            --allowedTools "Read(/home/runner/work/**),Glob,Grep,Write(./ai_review_payload.json),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api:*),Bash(git show:*),Bash(git diff:*),Bash(git log:*),Bash(git blame:*),Bash(git rev-parse:*),Bash(git ls-files:*),Bash(git grep:*)"
 
       - name: Send telemetry to wpcom
         if: always() && steps.ai-review.outputs.execution_file != ''

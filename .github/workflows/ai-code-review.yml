@@ -206,20 +206,19 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             gh pr comment "$PR_NUMBER" --repo "$REPO" --body \
               "AI review skipped: this PR modifies \`AGENTS.md\` or \`CLAUDE.md\` files, which the review bot reads as instructions. Edits to these files require human review."
-            exit 1
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Checkout repository
-        if: steps.check-team.outputs.is_member == 'true'
+        if: steps.check-team.outputs.is_member == 'true' && steps.trusted_files.outputs.skip == 'false'
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           fetch-depth: 0
           persist-credentials: false
 
       - name: Detect follow-up review
-        if: steps.check-team.outputs.is_member == 'true'
+        if: steps.check-team.outputs.is_member == 'true' && steps.trusted_files.outputs.skip == 'false'
         id: followup
         run: |
           set -uo pipefail

@@ -395,6 +395,8 @@ jobs:
 
             Use the prior review as ground truth for what was already said. Do NOT re-read the diff fresh and re-derive findings from scratch.
 
+            Treat a prior "Review readiness: Not ready" headline as a tracked issue. Re-check the CURRENT PR description (not the diff): if instructions now meet the bar, mark it `resolved` and render an empty {{READINESS}} line this pass; if still missing, mark `still-open` and re-render the line.
+
             HONOURING AUTHOR REPLIES (tier1/tier2 only)
             Read "${RUNNER_TEMP}/author-replies.md". Replies containing these markers are the strongest signal when classifying prior issues:
             - `@claude addressed` - mark `resolved` ONLY if the diff is consistent with the claimed fix. If the diff doesn't show the fix, mark `still-open` and note the disagreement explicitly: "Author replied addressed but the change isn't visible in the diff, please confirm." Don't quietly ignore the reply, and don't quietly mark resolved against the diff.
@@ -402,6 +404,8 @@ jobs:
             - `@claude not-applicable` - mark `obsolete`. Brief acknowledgement, no re-litigation.
 
             If multiple replies conflict, prefer the most recent.
+
+            For the testing-instructions / reproduction-steps readiness finding: on `@claude addressed`, re-read the CURRENT PR description; if instructions are now present and meet the bar, mark `resolved` and render an empty {{READINESS}} line; if still missing, keep the line and note "Author replied addressed but the PR description still lacks testing instructions, please add them." A `@claude rejected: <reason>` or `@claude not-applicable` suppresses the readiness line (render empty); quote the reason once in housekeeping and do not re-flag on later passes.
 
             FINDING LABELS
             Tag every finding with exactly one of these scope labels:
@@ -463,7 +467,7 @@ jobs:
                {
                  "commit_id": "{{COMMIT_SHA}}",
                  "event": "COMMENT",
-                 "body": "<!-- ai-review: claude-code gha sha:{{COMMIT_SHA}} before:${{ github.event.before }} -->\n{{SUMMARY}}\n{{HOUSEKEEPING}}\n\n---\n<!-- ai-review-footer -->\n<sub>Automatic review{{FOLLOW_UP_TAG}} · <code>${{ inputs.model || 'claude-opus-4-6' }}</code> · <a href=\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\">Workflow run</a></sub>\n\n<details><summary><sub>How to reply to a finding</sub></summary>\n\nReply on this review (or inline at the line the finding refers to) with one of:\n\n- `@claude addressed` - I made the change. Bot verifies against the next diff before marking resolved.\n- `@claude rejected: <reason>` - Will not fix; reason gets quoted on the next review.\n- `@claude not-applicable` - Finding does not apply (wrong file, already covered elsewhere, etc.).\n\nThe bot honours these on the next review pass.\n\n</details>",
+                 "body": "<!-- ai-review: claude-code gha sha:{{COMMIT_SHA}} before:${{ github.event.before }} -->\n{{READINESS}}{{SUMMARY}}\n{{HOUSEKEEPING}}\n\n---\n<!-- ai-review-footer -->\n<sub>Automatic review{{FOLLOW_UP_TAG}} · <code>${{ inputs.model || 'claude-opus-4-6' }}</code> · <a href=\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\">Workflow run</a></sub>\n\n<details><summary><sub>How to reply to a finding</sub></summary>\n\nReply on this review (or inline at the line the finding refers to) with one of:\n\n- `@claude addressed` - I made the change. Bot verifies against the next diff before marking resolved.\n- `@claude rejected: <reason>` - Will not fix; reason gets quoted on the next review.\n- `@claude not-applicable` - Finding does not apply (wrong file, already covered elsewhere, etc.).\n\nThe bot honours these on the next review pass.\n\n</details>",
                  "comments": [
                    {"path": "relative/file/path.php", "line": 42, "body": "comment text here"},
                    ...
@@ -475,6 +479,11 @@ jobs:
             - Follow-up reviews (tier1/tier2): "AI Code Review - Follow-up" followed by the per-issue reconciliation list (each prior issue on its own line as `- <issue ref>: resolved | still-open | obsolete - <one-line note>`) and then "New issues: <N>"
             For {{FOLLOW_UP_TAG}}: replace with " (follow-up)" for tier1/tier2 reviews, or "" (empty) for first reviews.
             For {{HOUSEKEEPING}}: render the trailing PR-housekeeping block (see PR HOUSEKEEPING below). Empty string if there is nothing to put in it.
+            For {{READINESS}}: a single prominent line, based SOLELY on TESTING INSTRUCTIONS & REPRODUCTION STEPS, computed fresh from the CURRENT PR description on every run.
+            - First apply the exemption gate and firing threshold in TESTING INSTRUCTIONS & REPRODUCTION STEPS. If the PR is exempt, or instructions are present and a reviewer could reach a pass/fail verdict, or an opt-out marker is present, or the gap was already rejected / marked not-applicable by the author: render {{READINESS}} as an EMPTY string. Silence means ready — never render a "ready" line.
+            - Only if a behaviour-changing PR has missing/unusable testing instructions (or a clearly bug-fix PR has zero reproduction steps), render exactly this one line, ending with a newline:
+                > **Review readiness:** Not ready — testing instructions are missing or inadequate. <one-line summary of the gaps>. Will review once added.\n
+            - This is review-readiness PROCESS feedback, not a code finding: do NOT apply a [fix here]/[follow-up]/[nit] label, and NEVER emit it as an inline comment. The itemised gaps still go in the PR HOUSEKEEPING block; this line is the one-line headline only.
 
             Step 3: Submit the review using the file as input:
                gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number || github.event.issue.number }}/reviews" -X POST --input ai_review_payload.json
@@ -486,7 +495,8 @@ jobs:
             - Clear title: Does it describe what the PR does? (e.g., "Fix cart total calculation" not "Fix bug")
             - Description with reasoning: Does it explain WHY this change is being made, not just what?
             - Issue link: Is there a link to a Linear ticket or GitHub issue?
-            - Test plan: Does it describe how to test the changes?
+            - Test plan: Are there testing instructions, and do they meet the bar in TESTING INSTRUCTIONS & REPRODUCTION STEPS below? Flag missing or low-quality instructions with the specific gaps.
+            - Reproduction steps (bug-fix PRs only): does the PR give the steps to reproduce the bug on an unpatched build (preconditions -> action -> observed buggy result)?
 
             These items belong in the trailing PR housekeeping block, NEVER in the body of the review or in inline comments. Same for docblock-accuracy notes, alphabetical-order / import-ordering nits, and a one-line note that you applied repo-specific `AGENTS.md` / `CLAUDE.md` guidance (when applicable). Substantive findings come first; housekeeping is collapsed.
 
@@ -495,7 +505,8 @@ jobs:
             ```
             <details><summary>PR housekeeping</summary>
 
-            - {any missing PR-description items: title, reasoning, issue link, test plan}
+            - {any missing PR-description items: title, reasoning, issue link}
+            - {testing-instructions / reproduction-steps gaps — the itemised expansion of the Review readiness line; see TESTING INSTRUCTIONS & REPRODUCTION STEPS}
             - {docblock-accuracy notes}
             - {alphabetical-order / pure-style nits}
             - {applied AGENTS.md / CLAUDE.md guidance, if any}
@@ -503,7 +514,36 @@ jobs:
             </details>
             ```
 
-            If there is nothing to put in the block, omit it (replace {{HOUSEKEEPING}} with an empty string). NEVER lead the review with PR-process or style feedback.
+            If there is nothing to put in the block, omit it (replace {{HOUSEKEEPING}} with an empty string). NEVER lead the review with PR-process or style feedback, EXCEPT the single {{READINESS}} headline about missing/inadequate testing instructions, which is the one process item allowed above the summary. All other housekeeping stays collapsed.
+
+            TESTING INSTRUCTIONS & REPRODUCTION STEPS
+            Evaluate the PR description's testing instructions — and, for bug-fix PRs, the reproduction steps — against the WooCommerce quality bar below. The goal is to flag gaps here so a human reviewer does not have to. If instructions are missing or too thin to act on, say so plainly and note the PR is not ready to review until they are added. Do NOT write the instructions yourself; just identify what is missing.
+
+            For bug-fix PRs, also confirm there are reproduction steps: the exact steps to trigger the bug on an unpatched build (preconditions -> action -> observed buggy result). Without them a reviewer cannot confirm the fix.
+
+            What to cover:
+            - Include as many testing instructions as needed to cover the PR's acceptance criteria (the conditions the PR must satisfy to be accepted) — the happy path AND relevant edge cases, not just a single scenario.
+
+            Structure each testing instruction as:
+            - Preconditions: everything needed to put WooCommerce in the right state before the action (e.g. create the product, log in as a shopper, open the shop page), written as if starting from a fresh install.
+            - Action: the single step that triggers the behaviour under test.
+            - Validation: the concrete, observable result(s) that confirm it worked.
+
+            Quality considerations (flag instructions that violate these):
+            - Understandable by someone new to WooCommerce; do not assume knowledge. e.g. instead of "Enable the [x] experiment", spell out the steps (install the WooCommerce Beta Tester plugin, go to Tools > WCA Test Helper > Experiments, toggle the [x] experiment).
+            - Say exactly where to go: give a URL or a full menu path (e.g. "Go to WooCommerce > Orders"), not "go to the Orders page".
+            - Use real, concrete test data (e.g. "Enter 'Blue T-Shirt' as the product name") instead of "enter a name for the product".
+            - If custom code is required, the code snippet must be included.
+            - If a plugin is required, a link to it (or the zip) must be provided.
+            - If an API endpoint is involved, link the endpoint documentation.
+            - For UI changes, screenshots and/or videos are encouraged.
+            - Keep instructions current: if a later commit makes them obsolete, they should be updated.
+
+            Exemption gate (evaluate FIRST): determine PR type from `gh pr diff --name-only`, the author login, and the title/body. If the PR is docs-only, a dependency/version bump, a revert, translations-only, or CI/workflow-only, produce NO readiness line and NO housekeeping note — these legitimately need no test plan. Pure refactors with no behaviour change get at most a soft housekeeping note, never a readiness flag. Also produce nothing if the PR body contains `<!-- ai-review: skip-testing-check -->` or the PR carries a `no-test-plan-needed` label.
+
+            Firing threshold (distinct from the quality bar above): fire ONLY when a behaviour-changing PR's instructions are missing or UNUSABLE — no plan at all, no observable validation step, or undisclosed required setup (a plugin/snippet/endpoint referenced but not provided) — or a clearly bug-fix PR has zero reproduction steps. Do NOT fire merely because instructions are terse, omit a URL, use generic-but-clear data, or lack screenshots. If a competent reviewer new to this PR could follow the steps to a pass/fail verdict, say nothing. The quality items above are advice to CITE once you have already decided to fire, not a checklist to fail line-by-line.
+
+            Surface the outcome in exactly two places: (1) the one-line {{READINESS}} headline at the top of the body (see {{READINESS}} above), and (2) the itemised specific gaps in the PR HOUSEKEEPING block. If it clears the bar, render neither. Never put this in the summary text, code findings, or inline comments.
 
             GATHERING CONTEXT
             You have tools available to explore the codebase. Use them when needed:

@@ -373,18 +373,11 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          case "$REVIEW_TYPE" in
-            tier1|tier2) FOLLOW_UP_TAG=" (follow-up)" ;;
-            *) FOLLOW_UP_TAG="" ;;
-          esac
-          # Fully assemble the review-body footer here so the model only pastes it
-          # verbatim and cannot re-derive or simplify it (it previously dropped the
-          # run link). Markdown link form => no double quotes for the model to JSON-escape.
-          FOOTER="<sub>Automatic review${FOLLOW_UP_TAG} · <code>${MODEL}</code> · [Workflow run](${RUN_URL})</sub>"
           {
             printf 'REVIEW_TYPE=%s\n' "$REVIEW_TYPE"
             printf 'BEFORE_SHA=%s\n' "$BEFORE_SHA"
-            printf 'FOOTER=%s\n' "$FOOTER"
+            printf 'MODEL=%s\n' "$MODEL"
+            printf 'RUN_URL=%s\n' "$RUN_URL"
           } > "${RUNNER_TEMP}/review_context.txt"
 
       - name: AI Code Review
@@ -404,7 +397,8 @@ jobs:
             Read run-context values from the file "${RUNNER_TEMP}/review_context.txt" (KEY=value lines, one per line):
             - REVIEW_TYPE - "first", "tier1", or "tier2" (see FOLLOW-UP REVIEW HANDLING)
             - BEFORE_SHA - the previous push head SHA ("before"); may be empty
-            - FOOTER - the fully-assembled review-body footer line; paste it VERBATIM, do not modify or simplify it
+            - MODEL - the model id running this review
+            - RUN_URL - the workflow run URL
             Two further values are ENVIRONMENT VARIABLES for use DIRECTLY in shell commands (the runner shell expands them; do not transcribe them by hand):
             - $GITHUB_REPOSITORY - the "owner/repo" slug used in gh api paths
             - $PR_NUMBER - the number of the PR under review
@@ -515,7 +509,8 @@ jobs:
             Replace {{SUMMARY}} with your review summary (see below).
             Replace the run-context placeholders with their resolved values, taken from "${RUNNER_TEMP}/review_context.txt" (KEY=value lines):
             - {{BEFORE_SHA}} -> the BEFORE_SHA value (may be empty; if empty, leave it empty so the marker reads "before:").
-            - {{FOOTER}} -> the FOOTER value, pasted VERBATIM. It is already fully assembled (model id + workflow-run link); do not modify, simplify, re-link, drop the link, or change any part of it.
+            - {{MODEL}} -> the MODEL value.
+            - {{RUN_URL}} -> the RUN_URL value.
             Never write a literal "$NAME" or "{{...}}" placeholder into the payload — every placeholder must be replaced with a concrete value. After writing ./ai_review_payload.json, confirm it contains no remaining "{{" or "}}" sequence; if any remain, fix them before submitting.
             Ensure all string values are properly JSON-escaped: double quotes as \", backslashes as \\, newlines as \n.
             The `path` in each comment must be relative to the repository root, exactly as shown in the diff output.
@@ -524,7 +519,7 @@ jobs:
                {
                  "commit_id": "{{COMMIT_SHA}}",
                  "event": "COMMENT",
-                 "body": "<!-- ai-review: claude-code gha sha:{{COMMIT_SHA}} before:{{BEFORE_SHA}} -->\n{{READINESS}}{{SUMMARY}}\n{{HOUSEKEEPING}}\n\n---\n<!-- ai-review-footer -->\n{{FOOTER}}\n\n<details><summary><sub>How to reply to a finding</sub></summary>\n\nReply on this review (or inline at the line the finding refers to) with one of:\n\n- `@claude addressed` - I made the change. Bot verifies against the next diff before marking resolved.\n- `@claude rejected: <reason>` - Will not fix; reason gets quoted on the next review.\n- `@claude not-applicable` - Finding does not apply (wrong file, already covered elsewhere, etc.).\n\nThe bot honours these on the next review pass.\n\n</details>",
+                 "body": "<!-- ai-review: claude-code gha sha:{{COMMIT_SHA}} before:{{BEFORE_SHA}} -->\n{{READINESS}}{{SUMMARY}}\n{{HOUSEKEEPING}}\n\n---\n<!-- ai-review-footer -->\n<sub>Automatic review{{FOLLOW_UP_TAG}} · <code>{{MODEL}}</code> · <a href=\"{{RUN_URL}}\">Workflow run</a></sub>\n\n<details><summary><sub>How to reply to a finding</sub></summary>\n\nReply on this review (or inline at the line the finding refers to) with one of:\n\n- `@claude addressed` - I made the change. Bot verifies against the next diff before marking resolved.\n- `@claude rejected: <reason>` - Will not fix; reason gets quoted on the next review.\n- `@claude not-applicable` - Finding does not apply (wrong file, already covered elsewhere, etc.).\n\nThe bot honours these on the next review pass.\n\n</details>",
                  "comments": [
                    {"path": "relative/file/path.php", "line": 42, "body": "comment text here"},
                    ...
@@ -534,6 +529,7 @@ jobs:
             For {{SUMMARY}}:
             - First reviews: "AI Code Review - Found <N> potential issues" (or "No issues found" if none). If there are zero code findings but {{READINESS}} rendered a "Not ready" line, use "AI Code Review - No blocking code issues found; see the Review readiness note above." instead — never pair "No issues found" / "The changes look good" with a non-empty {{READINESS}} line.
             - Follow-up reviews (tier1/tier2): "AI Code Review - Follow-up" followed by the per-issue reconciliation list (each prior issue on its own line as `- <issue ref>: resolved | still-open | obsolete - <one-line note>`) and then "New issues: <N>"
+            For {{FOLLOW_UP_TAG}}: replace with " (follow-up)" for tier1/tier2 reviews, or "" (empty) for first reviews.
             For {{HOUSEKEEPING}}: render the trailing PR-housekeeping block (see PR HOUSEKEEPING below). Empty string if there is nothing to put in it.
             For {{READINESS}}: a single prominent line, based SOLELY on TESTING INSTRUCTIONS & REPRODUCTION STEPS, computed fresh from the CURRENT PR description on every run.
             - When NOT firing — the PR is exempt, instructions are present and a reviewer could reach a pass/fail verdict, an opt-out marker/label is present, or (tier1/tier2 only) the gap was already rejected / marked not-applicable by the author: substitute {{READINESS}} with the empty string — zero characters, no newline, so {{SUMMARY}} sits flush against the marker comment's newline. "Render an empty {{READINESS}} line" anywhere in this prompt means exactly this empty-string substitution, NOT a literal blank line. Silence means ready — never render a "ready" line.

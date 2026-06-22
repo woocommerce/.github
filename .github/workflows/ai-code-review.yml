@@ -695,15 +695,9 @@ jobs:
             --allowedTools "Read(/home/runner/work/**),Glob,Grep,Write(./ai_review_payload.json),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api:*),Bash(git show:*),Bash(git diff:*),Bash(git log:*),Bash(git blame:*),Bash(git rev-parse:*),Bash(git ls-files:*),Bash(git grep:*)"
 
       - name: Verify a review was posted
-        # Fail-loudly guard. claude-code-action can report success while posting
-        # nothing (e.g. the Bun crash in older pins that aborted before the API
-        # call). The green status hid that outage across caller repos. If the
-        # step ran but no review carries this commit's marker, fail so the job
-        # goes red and the Slack alert fires.
-        #
-        # Rollout safety: hard-fail only when a caller has forwarded
-        # AI_REVIEW_SLACK_WEBHOOK_URL (opted in). Otherwise warn-only, so merging
-        # this to trunk does not break callers that have not migrated yet.
+        # Fail loudly when claude-code-action reports success but posts no review
+        # (the green-but-silent crash class). Hard-fail only when the caller
+        # forwarded the webhook; otherwise warn-only, so trunk merge stays inert.
         if: ${{ always() && steps.ai-review.outcome == 'success' }}
         shell: bash
         env:
@@ -712,8 +706,7 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -uo pipefail
-          # Head SHA the model reviewed. Prefer the event payload (stable for the
-          # run); fall back to the API for issue_comment runs, which lack head.sha.
+          # Head SHA from the event; fall back to the API on issue_comment runs.
           HEAD_SHA="$PR_HEAD_SHA"
           if [ -z "$HEAD_SHA" ]; then
             HEAD_SHA=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq .head.sha 2>/dev/null || true)
@@ -722,18 +715,9 @@ jobs:
             echo "::warning::Could not resolve head SHA (gh api blip); skipping missed-review check."
             exit 0
           fi
-          # Count only a claude[bot] review carrying this commit's marker. The
-          # author filter (nobody else can post as claude[bot]) plus the full
-          # marker prefix stop a forged body from suppressing the alert.
-          #
-          # Accepted weaker guarantee: the check keys on the head SHA, not the run.
-          # claude reviews do not reliably carry the run URL in the body (observed
-          # in only about half of recent caller reviews; the footer link is often
-          # dropped), so correlating to GITHUB_RUN_ID would false-fail valid
-          # reviews. Consequence: a prior run's review for an unchanged head SHA
-          # satisfies the check, so a re-run or re-review on the same SHA that
-          # posts nothing will not alert. The first review for a SHA, which is the
-          # silent-outage case this guards, is still covered.
+          # Match the bot author + this commit's marker. Keyed on head SHA (not the
+          # run: reviews drop the run URL ~half the time), so a no-op re-review on an
+          # unchanged SHA will not alert; the first review for a SHA is covered.
           MARKER="<!-- ai-review: claude-code gha sha:${HEAD_SHA}"
           MATCHES=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100" --paginate 2>/dev/null \
             | jq -s --arg m "$MARKER" \
@@ -848,19 +832,13 @@ jobs:
           fi
 
       - name: Alert Slack on missed or failed review
-        # Posts to the channel behind AI_REVIEW_SLACK_WEBHOOK_URL when the job
-        # failed and the caller forwarded the webhook. Gated on HAS_SLACK_WEBHOOK
-        # so a genuine failure in a not-yet-migrated caller does not run this with
-        # an empty webhook.
+        # Fires only when the job failed and the caller forwarded a webhook.
         if: ${{ failure() && env.HAS_SLACK_WEBHOOK == 'true' }}
         uses: slackapi/slack-github-action@485a9d42d3a73031f12ec201c457e2162c45d02d # v2.0.0
         with:
           webhook: ${{ secrets.AI_REVIEW_SLACK_WEBHOOK_URL }}
           webhook-type: incoming-webhook
           errors: true
-          # All interpolated values below are URLs and numeric ids (no free text),
-          # so the inline JSON is safe. If a free-text field is ever added, build
-          # the payload with jq -n --arg instead of string interpolation.
           payload: |
             {
               "text": "AI code review job failed (a review may not have been posted). PR: ${{ github.server_url }}/${{ github.repository }}/pull/${{ env.PR_NUMBER }} Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

@@ -722,23 +722,28 @@ jobs:
             echo "::warning::Could not resolve head SHA (gh api blip); skipping missed-review check."
             exit 0
           fi
-          # Count only a claude[bot] review for THIS run: the body must carry both
-          # this commit's marker and this run's URL. The author filter (nobody
-          # else can post as claude[bot]) plus the full marker prefix stop a forged
-          # body from suppressing the alert; requiring this run's id stops a prior
-          # run's review for an unchanged head SHA from masking a re-run or
-          # re-review that itself posted nothing.
+          # Count only a claude[bot] review carrying this commit's marker. The
+          # author filter (nobody else can post as claude[bot]) plus the full
+          # marker prefix stop a forged body from suppressing the alert.
+          #
+          # Accepted weaker guarantee: the check keys on the head SHA, not the run.
+          # claude reviews do not reliably carry the run URL in the body (observed
+          # in only about half of recent caller reviews; the footer link is often
+          # dropped), so correlating to GITHUB_RUN_ID would false-fail valid
+          # reviews. Consequence: a prior run's review for an unchanged head SHA
+          # satisfies the check, so a re-run or re-review on the same SHA that
+          # posts nothing will not alert. The first review for a SHA, which is the
+          # silent-outage case this guards, is still covered.
           MARKER="<!-- ai-review: claude-code gha sha:${HEAD_SHA}"
-          RUN_NEEDLE="actions/runs/${GITHUB_RUN_ID}"
           MATCHES=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100" --paginate 2>/dev/null \
-            | jq -s --arg m "$MARKER" --arg r "$RUN_NEEDLE" \
-                '[ .[][] | select(.user.login == "claude[bot]") | select((.body | contains($m)) and (.body | contains($r))) ] | length' 2>/dev/null || true)
+            | jq -s --arg m "$MARKER" \
+                '[ .[][] | select(.user.login == "claude[bot]") | select(.body | contains($m)) ] | length' 2>/dev/null || true)
           if [ -z "$MATCHES" ]; then
             echo "::warning::Could not fetch or parse reviews (gh api blip); skipping missed-review check."
             exit 0
           fi
           if [ "$MATCHES" -gt 0 ]; then
-            echo "AI review present for ${HEAD_SHA} (run ${GITHUB_RUN_ID})."
+            echo "AI review present for ${HEAD_SHA}."
             exit 0
           fi
           echo "::error::AI Code Review reported success but posted no review for ${HEAD_SHA} (run ${GITHUB_RUN_ID})."

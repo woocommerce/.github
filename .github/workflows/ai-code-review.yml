@@ -709,10 +709,29 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           WEBHOOK: ${{ secrets.AI_REVIEW_SLACK_WEBHOOK_URL }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          HEAD_SHA=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq .head.sha)
-          if gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100" --paginate \
-               --jq '.[].body' | grep -qF "gha sha:${HEAD_SHA}"; then
+          set -uo pipefail
+          # Head SHA the model reviewed. Prefer the event payload (stable for the
+          # run); fall back to the API for issue_comment runs, which lack head.sha.
+          HEAD_SHA="$PR_HEAD_SHA"
+          if [ -z "$HEAD_SHA" ]; then
+            HEAD_SHA=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq .head.sha 2>/dev/null || true)
+          fi
+          if [ -z "$HEAD_SHA" ]; then
+            echo "::warning::Could not resolve head SHA (gh api blip); skipping missed-review check."
+            exit 0
+          fi
+          # Count only a review by the AI reviewer bot that carries this commit's
+          # full marker. The author filter (nobody else can post as claude[bot])
+          # plus the exact HTML-comment prefix stop anyone from suppressing the
+          # alert by pasting the public marker string into their own review.
+          if ! REVIEWS=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100" --paginate \
+                --jq '.[] | select(.user.login == "claude[bot]") | .body' 2>/dev/null); then
+            echo "::warning::Could not fetch reviews (gh api blip); skipping missed-review check."
+            exit 0
+          fi
+          if printf '%s' "$REVIEWS" | grep -qF "<!-- ai-review: claude-code gha sha:${HEAD_SHA}"; then
             echo "AI review present for ${HEAD_SHA}."
             exit 0
           fi
@@ -827,7 +846,8 @@ jobs:
         with:
           webhook: ${{ secrets.AI_REVIEW_SLACK_WEBHOOK_URL }}
           webhook-type: incoming-webhook
+          errors: true
           payload: |
             {
-              "text": "AI code review failed or posted no review. PR: ${{ github.server_url }}/${{ github.repository }}/pull/${{ env.PR_NUMBER }} Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+              "text": "AI code review job failed (a review may not have been posted). PR: ${{ github.server_url }}/${{ github.repository }}/pull/${{ env.PR_NUMBER }} Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
             }

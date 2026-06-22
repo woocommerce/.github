@@ -18,6 +18,8 @@ on:
         required: true
       AI_REVIEW_TELEMETRY_TOKEN:
         required: false
+      AI_REVIEW_SLACK_WEBHOOK_URL:
+        required: false
 
 jobs:
   # Caller-org guard. Reject callers outside the allowed orgs before any
@@ -91,6 +93,7 @@ jobs:
     # to the 21,000-char max-expression-length limit.
     env:
       PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+      HAS_SLACK_WEBHOOK: ${{ secrets.AI_REVIEW_SLACK_WEBHOOK_URL != '' }}
 
     steps:
       # Gate issue_comment runs to PR comments matching the bot trigger.
@@ -691,6 +694,48 @@ jobs:
             --model ${{ inputs.model || 'claude-opus-4-6' }}
             --allowedTools "Read(/home/runner/work/**),Glob,Grep,Write(./ai_review_payload.json),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api:*),Bash(git show:*),Bash(git diff:*),Bash(git log:*),Bash(git blame:*),Bash(git rev-parse:*),Bash(git ls-files:*),Bash(git grep:*)"
 
+      - name: Verify a review was posted
+        # Fail loudly when claude-code-action reports success but posts no review
+        # (the green-but-silent crash class). Hard-fail only when the caller
+        # forwarded the webhook; otherwise warn-only, so trunk merge stays inert.
+        if: ${{ always() && steps.ai-review.outcome == 'success' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WEBHOOK: ${{ secrets.AI_REVIEW_SLACK_WEBHOOK_URL }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -uo pipefail
+          # Head SHA from the event; fall back to the API on issue_comment runs.
+          HEAD_SHA="$PR_HEAD_SHA"
+          if [ -z "$HEAD_SHA" ]; then
+            HEAD_SHA=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq .head.sha 2>/dev/null || true)
+          fi
+          if [ -z "$HEAD_SHA" ]; then
+            echo "::warning::Could not resolve head SHA (gh api blip); skipping missed-review check."
+            exit 0
+          fi
+          # Match the bot author + this commit's marker. Keyed on head SHA (not the
+          # run: reviews drop the run URL ~half the time), so a no-op re-review on an
+          # unchanged SHA will not alert; the first review for a SHA is covered.
+          MARKER="<!-- ai-review: claude-code gha sha:${HEAD_SHA}"
+          MATCHES=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100" --paginate 2>/dev/null \
+            | jq -s --arg m "$MARKER" \
+                '[ .[][] | select(.user.login == "claude[bot]") | select(.body | contains($m)) ] | length' 2>/dev/null || true)
+          if [ -z "$MATCHES" ]; then
+            echo "::warning::Could not fetch or parse reviews (gh api blip); skipping missed-review check."
+            exit 0
+          fi
+          if [ "$MATCHES" -gt 0 ]; then
+            echo "AI review present for ${HEAD_SHA}."
+            exit 0
+          fi
+          echo "::error::AI Code Review reported success but posted no review for ${HEAD_SHA} (run ${GITHUB_RUN_ID})."
+          if [ -n "${WEBHOOK}" ]; then
+            exit 1
+          fi
+          echo "::warning::Detection in warn-only mode (no AI_REVIEW_SLACK_WEBHOOK_URL forwarded); not failing the job."
+
       - name: Send telemetry to wpcom
         if: always() && steps.ai-review.outputs.execution_file != ''
         continue-on-error: true
@@ -785,3 +830,16 @@ jobs:
             echo "telemetry response body:"
             cat /tmp/telemetry_response || true
           fi
+
+      - name: Alert Slack on missed or failed review
+        # Fires only when the job failed and the caller forwarded a webhook.
+        if: ${{ failure() && env.HAS_SLACK_WEBHOOK == 'true' }}
+        uses: slackapi/slack-github-action@485a9d42d3a73031f12ec201c457e2162c45d02d # v2.0.0
+        with:
+          webhook: ${{ secrets.AI_REVIEW_SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          errors: true
+          payload: |
+            {
+              "text": "AI code review job failed (a review may not have been posted). PR: ${{ github.server_url }}/${{ github.repository }}/pull/${{ env.PR_NUMBER }} Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            }

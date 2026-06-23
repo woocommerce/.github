@@ -205,7 +205,10 @@ jobs:
 
       # AGENTS.md / CLAUDE.md are bot instructions; skip review if a PR edits them
       # so the bot doesn't review under guidance the PR itself is modifying.
-      - name: Skip AI review on trusted-instruction file edits
+      # Also skip if the PR edits the AI review workflow file: the app token
+      # exchange (OIDC) rejects a workflow that differs from the default branch,
+      # so the review cannot run on those PRs anyway.
+      - name: Skip AI review on trusted-instruction or workflow-file edits
         if: steps.check-team.outputs.is_member == 'true'
         id: trusted_files
         env:
@@ -219,6 +222,10 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             gh pr comment "$PR_NUMBER" --repo "$REPO" --body \
               "AI review skipped: this PR modifies \`AGENTS.md\` or \`CLAUDE.md\` files, which the review bot reads as instructions. Edits to these files require human review."
+          elif printf '%s\n' "$FILES" | grep -qE '^\.github/workflows/ai-code-review\.yml$'; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            gh pr comment "$PR_NUMBER" --repo "$REPO" --body \
+              "AI review skipped: this PR changes the AI review workflow file, which the review app cannot mint a token for (the OIDC token exchange requires the workflow to match the default branch)."
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
@@ -841,5 +848,24 @@ jobs:
           errors: true
           payload: |
             {
-              "text": "AI code review job failed (a review may not have been posted). PR: ${{ github.server_url }}/${{ github.repository }}/pull/${{ env.PR_NUMBER }} Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+              "text": "AI code review job failed on ${{ github.repository }} PR #${{ env.PR_NUMBER }}",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": { "type": "plain_text", "text": ":rotating_light: AI code review job failed", "emoji": true }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    { "type": "mrkdwn", "text": "*Repo*\n${{ github.repository }}" },
+                    { "type": "mrkdwn", "text": "*Pull request*\n<${{ github.server_url }}/${{ github.repository }}/pull/${{ env.PR_NUMBER }}|#${{ env.PR_NUMBER }}>" }
+                  ]
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    { "type": "mrkdwn", "text": "A review may not have been posted. <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View workflow run>" }
+                  ]
+                }
+              ]
             }

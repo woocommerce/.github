@@ -223,11 +223,13 @@ jobs:
           if echo "$FILES" | grep -qiE '(^|/)(AGENTS|CLAUDE)\.md$'; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             gh pr comment "$PR_NUMBER" --repo "$REPO" --body \
-              "AI review skipped: this PR modifies \`AGENTS.md\` or \`CLAUDE.md\` files, which the review bot reads as instructions. Edits to these files require human review."
+              "AI review skipped: this PR modifies \`AGENTS.md\` or \`CLAUDE.md\` files, which the review bot reads as instructions. Edits to these files require human review." \
+              || echo "::warning::could not post skip comment"
           elif printf '%s\n' "$FILES" | grep -qE '^\.github/workflows/ai-code-review\.yml$'; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             gh pr comment "$PR_NUMBER" --repo "$REPO" --body \
-              "AI review skipped: this PR changes the AI review workflow file, which the review app cannot mint a token for (the OIDC token exchange requires the workflow to match the default branch)."
+              "AI review skipped: this PR changes the AI review workflow file, which the review app cannot mint a token for (the OIDC token exchange requires the workflow to match the default branch)." \
+              || echo "::warning::could not post skip comment"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
@@ -724,26 +726,32 @@ jobs:
             echo "::warning::Could not resolve head SHA (gh api blip); skipping missed-review check."
             exit 0
           fi
-          # Match the bot author + this commit's marker. Keyed on head SHA (not the
-          # run: reviews drop the run URL ~half the time), so a no-op re-review on an
-          # unchanged SHA will not alert; the first review for a SHA is covered.
-          MARKER="<!-- ai-review: claude-code gha sha:${HEAD_SHA}"
-          MATCHES=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100" --paginate 2>/dev/null \
-            | jq -s --arg m "$MARKER" \
-                '[ .[][] | select(.user.login == "claude[bot]") | select(.body | contains($m)) ] | length' 2>/dev/null || true)
-          if [ -z "$MATCHES" ]; then
-            echo "::warning::Could not fetch or parse reviews (gh api blip); skipping missed-review check."
+          # Bodies of all claude[bot] reviews, fetched once. A fetch/parse blip
+          # skips the check rather than firing a false alert.
+          RAW=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews?per_page=100" --paginate 2>/dev/null || true)
+          if [ -z "$RAW" ]; then
+            echo "::warning::Could not fetch reviews (gh api blip); skipping missed-review check."
             exit 0
           fi
-          if [ "$MATCHES" -gt 0 ]; then
+          REVIEWS=$(printf '%s' "$RAW" | jq -s '[ .[][] | select(.user.login == "claude[bot]") | .body ]' 2>/dev/null || true)
+          if [ -z "$REVIEWS" ]; then
+            echo "::warning::Could not parse reviews (gh api blip); skipping missed-review check."
+            exit 0
+          fi
+          # A SHA is reviewed when some body carries its marker. Keyed on head SHA
+          # (not run id: reviews drop the run URL ~half the time).
+          reviewed() { printf '%s' "$REVIEWS" | jq -e --arg m "<!-- ai-review: claude-code gha sha:$1" 'any(.[]; contains($m))' >/dev/null 2>&1; }
+          if reviewed "$HEAD_SHA"; then
             echo "AI review present for ${HEAD_SHA}."
             exit 0
           fi
-          # Superseded? If head advanced since this run started, a newer push has
-          # its own run that covers the new commit; don't alert on the stale one.
+          # Superseded only if the head moved AND the new head is itself reviewed.
+          # A bare SHA-moved check is not enough: this job does not run on
+          # `synchronize`, so a plain push starts no covering run, and skipping
+          # then would swallow a real miss on HEAD_SHA.
           CUR_SHA=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq .head.sha 2>/dev/null || true)
-          if [ -n "$CUR_SHA" ] && [ "$CUR_SHA" != "$HEAD_SHA" ]; then
-            echo "::warning::Head moved ${HEAD_SHA} -> ${CUR_SHA} during the run; a newer run covers it. Skipping alert."
+          if [ -n "$CUR_SHA" ] && [ "$CUR_SHA" != "$HEAD_SHA" ] && reviewed "$CUR_SHA"; then
+            echo "::warning::Head moved ${HEAD_SHA} -> ${CUR_SHA} and the new head is reviewed; skipping stale-head alert."
             exit 0
           fi
           echo "::error::AI Code Review reported success but posted no review for ${HEAD_SHA} (run ${GITHUB_RUN_ID})."

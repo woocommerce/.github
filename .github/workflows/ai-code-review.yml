@@ -219,7 +219,9 @@ jobs:
           set -euo pipefail
           # Files API, not `gh pr diff`: the latter 406s past 300 changed files
           # and failed the job (firing a false missed-review alert) on large PRs.
-          FILES=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename')
+          # A fetch blip yields empty FILES and falls through to skip=false (review
+          # runs) rather than failing the job.
+          FILES=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename' 2>/dev/null || true)
           if echo "$FILES" | grep -qiE '(^|/)(AGENTS|CLAUDE)\.md$'; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             gh pr comment "$PR_NUMBER" --repo "$REPO" --body \

@@ -737,6 +737,13 @@ jobs:
             echo "AI review present for ${HEAD_SHA}."
             exit 0
           fi
+          # Superseded? If head advanced since this run started, a newer push has
+          # its own run that covers the new commit; don't alert on the stale one.
+          CUR_SHA=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq .head.sha 2>/dev/null || true)
+          if [ -n "$CUR_SHA" ] && [ "$CUR_SHA" != "$HEAD_SHA" ]; then
+            echo "::warning::Head moved ${HEAD_SHA} -> ${CUR_SHA} during the run; a newer run covers it. Skipping alert."
+            exit 0
+          fi
           echo "::error::AI Code Review reported success but posted no review for ${HEAD_SHA} (run ${GITHUB_RUN_ID})."
           if [ -n "${WEBHOOK}" ]; then
             exit 1

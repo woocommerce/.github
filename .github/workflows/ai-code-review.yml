@@ -438,6 +438,8 @@ jobs:
             - PR_NUMBER - the number of the PR under review
             - GITHUB_REPOSITORY - the "owner/repo" slug used in gh api paths
 
+            `.ai-review/` is READ-ONLY context the workflow prepared for you. Write your output ONLY to `./ai_review_payload.json` in the working directory (the Write tool is allowlisted for exactly that path). Do NOT write the payload, helper scripts, or any scratch file inside `.ai-review/`: those writes are denied and waste turns.
+
             CRITICAL - NO SHELL VARIABLES IN COMMANDS. Your FIRST action is to read `.ai-review/review_context.txt` and note the literal values. Claude Code denies any Bash command containing a shell-variable expansion (e.g. `$PR_NUMBER`, `${PR_NUMBER}`, `$GITHUB_REPOSITORY`, `${RUNNER_TEMP}`): the command is blocked before it runs, you waste a turn, and you may run out of turns before posting the review. Throughout these instructions, `<PR_NUMBER>` is a PLACEHOLDER for the literal PR_NUMBER value, and `<REPO>` is a PLACEHOLDER for the literal GITHUB_REPOSITORY value (the "owner/repo" slug). Substitute the literals you read; never leave the angle-bracket placeholder text in a command, and never use a shell variable. Example: if PR_NUMBER=4330 and GITHUB_REPOSITORY=woocommerce/woocommerce-bookings, run `gh pr diff 4330` and `gh api "repos/woocommerce/woocommerce-bookings/pulls/4330/reviews"`, never `gh pr diff <PR_NUMBER>` and never `gh pr diff "$PR_NUMBER"`. The same applies to any value you WRITE into a file (e.g. the review body marker/footer): use the literal value, never a literal "$NAME" or "{{NAME}}".
 
             OBJECTIVE
@@ -540,7 +542,7 @@ jobs:
             Step 1: Get the latest commit SHA:
                gh api "repos/<REPO>/pulls/<PR_NUMBER>" --jq '.head.sha'
 
-            Step 2: Use the Write tool to create a JSON file at ./ai_review_payload.json.
+            Step 2: Use the Write tool to create a JSON file at ./ai_review_payload.json (in the working directory, NOT inside .ai-review/).
             Replace {{COMMIT_SHA}} with the SHA from Step 1.
             Replace {{SUMMARY}} with your review summary (see below).
             Replace the run-context placeholders with their resolved values, taken from `.ai-review/review_context.txt` (KEY=value lines):

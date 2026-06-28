@@ -722,7 +722,7 @@ jobs:
             5. Analyze the diff against the CODE REVIEW FOCUS areas; label every finding [fix here] / [follow-up] / [nit]
             6. For each potential issue, check if already covered (skip if so)
             7. Build the {{SUMMARY}} (per-issue reconciliation lines for tier1/tier2, or counts for first) and the {{HOUSEKEEPING}} block (or empty)
-            8. Use the Write tool to create ./ai_review_payload.json (include the HTML marker comment, the footer sentinel, and the cheat-sheet block exactly as shown)
+            8. Use the Write tool to create ./ai_review_payload.json in the working directory, NOT inside .ai-review/ which is read-only (include the HTML marker comment, the footer sentinel, and the cheat-sheet block exactly as shown)
             9. Submit: gh api "repos/<REPO>/pulls/<PR_NUMBER>/reviews" -X POST --input ai_review_payload.json
 
           # Read() path semantics (gitignore-style): no leading slash = relative to

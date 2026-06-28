@@ -723,9 +723,16 @@ jobs:
             8. Use the Write tool to create ./ai_review_payload.json (include the HTML marker comment, the footer sentinel, and the cheat-sheet block exactly as shown)
             9. Submit: gh api "repos/<REPO>/pulls/<PR_NUMBER>/reviews" -X POST --input ai_review_payload.json
 
+          # Read() path semantics (gitignore-style): no leading slash = relative to
+          # the model's cwd (the checkout), single leading slash = relative to the
+          # project root, double slash = absolute from filesystem root. Read(.ai-review/**)
+          # is cwd-relative and matches ${GITHUB_WORKSPACE}/.ai-review/. A path like
+          # Read(/home/runner/work/**) would NOT be absolute; it would resolve under
+          # the checkout and match nothing. Source-tree exploration uses Glob/Grep and
+          # git show/grep, which are allowlisted below.
           claude_args: >
             --model ${{ inputs.model || 'claude-opus-4-6' }}
-            --allowedTools "Read(/home/runner/work/**),Read(.ai-review/**),Glob,Grep,Write(./ai_review_payload.json),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api:*),Bash(git show:*),Bash(git diff:*),Bash(git log:*),Bash(git blame:*),Bash(git rev-parse:*),Bash(git ls-files:*),Bash(git grep:*)"
+            --allowedTools "Read(.ai-review/**),Glob,Grep,Write(./ai_review_payload.json),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api:*),Bash(git show:*),Bash(git diff:*),Bash(git log:*),Bash(git blame:*),Bash(git rev-parse:*),Bash(git ls-files:*),Bash(git grep:*)"
 
       # TEMPORARY (QAO-568): keep the full execution transcript so we can read why
       # a run reports success but posts no review. Must live on trunk (a debug

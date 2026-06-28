@@ -398,6 +398,11 @@ jobs:
 
       - name: AI Code Review
         id: ai-review
+        # Step-level cap below the 30-min job timeout. A runaway model hits this
+        # and FAILS the step (a step timeout is a failure, not a job cancel), so
+        # the failure() alert fires, with job budget left to send it. A bare job
+        # timeout would mark the job cancelled, which the alert gate skips.
+        timeout-minutes: 25
         if: |
           steps.check-team.outputs.is_member == 'true' &&
           steps.followup.outputs.skip != 'true' &&

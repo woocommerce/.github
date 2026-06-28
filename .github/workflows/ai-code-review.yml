@@ -402,7 +402,7 @@ jobs:
           steps.check-team.outputs.is_member == 'true' &&
           steps.followup.outputs.skip != 'true' &&
           steps.trusted_files.outputs.skip == 'false'
-        uses: anthropics/claude-code-action@80b31826338489861333dc17217865dfe8085cdc # v1.0.155
+        uses: anthropics/claude-code-action@a92e7c70a4da9793dc164451d829089dc057a464 # v1.0.159
         with:
           anthropic_api_key: ${{ secrets.AI_CODE_REVIEW_ANTHROPIC_API_KEY }}
           prompt: |

@@ -712,8 +712,11 @@ jobs:
             --model ${{ inputs.model || 'claude-opus-4-6' }}
             --allowedTools "Read(/home/runner/work/**),Glob,Grep,Write(./ai_review_payload.json),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api:*),Bash(git show:*),Bash(git diff:*),Bash(git log:*),Bash(git blame:*),Bash(git rev-parse:*),Bash(git ls-files:*),Bash(git grep:*)"
 
-      # DEBUG BRANCH ONLY: keep the full execution transcript (case A: success but
-      # no post). Empty on a runaway that gets killed before the file is written.
+      # TEMPORARY (QAO-568): keep the full execution transcript so we can read why
+      # a run reports success but posts no review. Must live on trunk (a debug
+      # branch fails the OIDC token exchange, which requires the reusable workflow
+      # to match the default branch). Empty on a runaway killed before the file is
+      # written. Revert once a transcript is captured.
       - name: Upload execution transcript (debug)
         if: always() && steps.ai-review.outputs.execution_file != ''
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

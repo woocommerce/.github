@@ -441,19 +441,26 @@ jobs:
             HEAD_SHA=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq .head.sha)
           fi
           : "${HEAD_SHA:?could not resolve PR head SHA}"
+          : "${RUN_URL:?could not read RUN_URL from review context}"
 
           # Normalize the all-zeros "before" SHA to empty (matches the rest of the workflow).
           case "$BEFORE_SHA" in 0000000*) BEFORE_SHA="" ;; esac
 
-          # Validate the model output. Fail loudly: no review posts, the Verify watchdog alerts.
+          # Validate the model output: exactly ONE JSON object, a string body with no
+          # UNSUBSTITUTED prompt placeholder ({{SUMMARY}} etc. - quoted template code
+          # like {{ price }} is allowed), and comments is an array (or null/absent).
+          # Fail loudly: no review posts, the Verify watchdog alerts.
           [ -s "$PAYLOAD" ] || { echo "::error::no payload written by model"; exit 1; }
-          jq -e 'type=="object" and (.body|type=="string") and (.body|test("\\{\\{")|not) and ((.comments|type=="array") or (.comments==null))' "$PAYLOAD" >/dev/null 2>&1 \
+          jq -e -s 'length==1 and (.[0]|type=="object" and (.body|type=="string") and (.body|test("\\{\\{(READINESS|SUMMARY|HOUSEKEEPING|COMMIT_SHA|MODEL|RUN_URL|BEFORE_SHA|FOLLOW_UP_TAG)\\}\\}")|not) and ((.comments|type=="array") or (.comments==null)))' "$PAYLOAD" >/dev/null 2>&1 \
             || { echo "::error::payload failed validation"; exit 1; }
 
-          # Anti-forgery: neutralise any literal marker/footer the model echoed (split pipe so a
-          # jq failure aborts under set -e instead of yielding a silently empty body).
+          # Anti-forgery: neutralise any literal claude-code marker/footer the model
+          # echoed, so it cannot forge the head-SHA marker the Verify watchdog keys on.
+          # Narrowed to the "claude-code" family so unrelated prose (e.g. a quoted
+          # <!-- ai-review: skip-testing-check --> opt-out marker) stays intact. Split
+          # pipe so a jq failure aborts under set -e, not a silently empty body.
           RAW_BODY=$(jq -r '.body' "$PAYLOAD")
-          CONTENT=$(printf '%s' "$RAW_BODY" | sed -E -e 's/<!--[[:space:]]*ai-review:/<!-- ai-review[stripped]:/g' -e 's/<!--[[:space:]]*ai-review-footer[[:space:]]*-->/<!-- ai-review-footer[stripped] -->/g')
+          CONTENT=$(printf '%s' "$RAW_BODY" | sed -E -e 's/<!--[[:space:]]*ai-review:[[:space:]]*claude-code/<!-- ai-review[stripped]: claude-code/g' -e 's/<!--[[:space:]]*ai-review-footer[[:space:]]*-->/<!-- ai-review-footer[stripped] -->/g')
 
           FOLLOW_UP_TAG=""
           if [ "${REVIEW_TYPE:-first}" != "first" ]; then FOLLOW_UP_TAG=" (follow-up)"; fi
@@ -462,7 +469,7 @@ jobs:
           FOOTER=$(printf '\n\n---\n<!-- ai-review-footer -->\n<sub>Automatic review%s · <code>%s</code> · <a href="%s">Workflow run</a></sub>\n\n<details><summary><sub>How to reply to a finding</sub></summary>\n\nReply on this review (or inline at the line the finding refers to) with one of:\n\n- `@claude addressed` - I made the change. Bot verifies against the next diff before marking resolved.\n- `@claude rejected: <reason>` - Will not fix; reason gets quoted on the next review.\n- `@claude not-applicable` - Finding does not apply (wrong file, already covered elsewhere, etc.).\n\nThe bot honours these on the next review pass.\n\n</details>' "$FOLLOW_UP_TAG" "$MODEL" "$RUN_URL")
 
           jq -n --arg sha "$HEAD_SHA" --arg marker "$MARKER" --arg content "$CONTENT" --arg footer "$FOOTER" --slurpfile p "$PAYLOAD" \
-            '{commit_id:$sha, event:"COMMENT", body:($marker + "\n" + $content + $footer), comments:($p[0].comments // [])}' \
+            '{commit_id:$sha, event:"COMMENT", body:($marker + "\n" + $content + $footer), comments:(($p[0].comments // []) | map(if (.body|type)=="string" then .body |= gsub("<!--[[:space:]]*ai-review:[[:space:]]*claude-code"; "<!-- ai-review[stripped]: claude-code") else . end))}' \
             > ai_review_payload.final.json
 
           # Belt-and-suspenders: the run URL must be present before we POST.
@@ -629,7 +636,7 @@ jobs:
                bash .ai-review/finalize.sh
             That script validates your payload, stamps the marker + footer (including the workflow-run URL) and the commit_id, and posts the review. If it prints an `::error::`, fix ./ai_review_payload.json and run `bash .ai-review/finalize.sh` again. You are done once it posts.
 
-            ALWAYS write the payload file, even if no issues are found. If the code looks good AND {{READINESS}} is empty, write a payload with an empty comments array and a summary like "AI Code Review - No issues found. The changes look good." If the code looks good but {{READINESS}} fired a "Not ready" line, keep the comments array empty but use "AI Code Review - No blocking code issues found; see the Review readiness note above." so the body never says the changes look good while the headline says Not ready.
+            ALWAYS deliver a review, even if no issues are found: write the payload file AND then run `bash .ai-review/finalize.sh`. Writing the payload alone does NOT post the review - the review is only delivered once finalize.sh runs and posts it, so running it is mandatory and is your last action every time. If the code looks good AND {{READINESS}} is empty, write a payload with an empty comments array and a summary like "AI Code Review - No issues found. The changes look good." If the code looks good but {{READINESS}} fired a "Not ready" line, keep the comments array empty but use "AI Code Review - No blocking code issues found; see the Review readiness note above." so the body never says the changes look good while the headline says Not ready.
 
             PR HOUSEKEEPING
             Check the PR description for:
@@ -784,7 +791,7 @@ jobs:
           # git show/grep, which are allowlisted below.
           claude_args: >
             --model ${{ inputs.model || 'claude-opus-4-6' }}
-            --allowedTools "Read(.ai-review/**),Glob,Grep,Write(./ai_review_payload.json),Bash(bash .ai-review/finalize.sh),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api:*),Bash(git show:*),Bash(git diff:*),Bash(git log:*),Bash(git blame:*),Bash(git rev-parse:*),Bash(git ls-files:*),Bash(git grep:*)"
+            --allowedTools "Read(.ai-review/**),Glob,Grep,Write(./ai_review_payload.json),Bash(bash .ai-review/finalize.sh:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api:*),Bash(git show:*),Bash(git diff:*),Bash(git log:*),Bash(git blame:*),Bash(git rev-parse:*),Bash(git ls-files:*),Bash(git grep:*)"
 
       - name: Verify a review was posted
         # Fail loudly when claude-code-action reports success but posts no review

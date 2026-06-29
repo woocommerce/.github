@@ -395,6 +395,7 @@ jobs:
           BEFORE_SHA: ${{ github.event.before }}
           MODEL: ${{ inputs.model || 'claude-opus-4-6' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           # Write context into the checkout dir (readable by the model's Read tool
@@ -409,7 +410,75 @@ jobs:
             printf 'RUN_URL=%s\n' "$RUN_URL"
             printf 'PR_NUMBER=%s\n' "$PR_NUMBER"
             printf 'GITHUB_REPOSITORY=%s\n' "$GITHUB_REPOSITORY"
+            printf 'HEAD_SHA=%s\n' "$PR_HEAD_SHA"
           } > "${GITHUB_WORKSPACE}/.ai-review/review_context.txt"
+
+          # Write the finalize script the model runs as its LAST action. The workflow
+          # owns this file (overwriting any PR-head pre-seed), so the marker + footer
+          # are assembled from trusted context, not by the model: the run URL can't be
+          # dropped (QAO-562). The model runs it via the single allowlisted command
+          # `bash .ai-review/finalize.sh`; the POST inside uses the in-action
+          # GITHUB_TOKEN, so the review author stays claude[bot] and the Verify and
+          # follow-up matchers are unchanged. The 'FINALIZE' heredoc is quoted, so
+          # nothing below is expanded here; it is written verbatim and runs later.
+          cat > "${GITHUB_WORKSPACE}/.ai-review/finalize.sh" <<'FINALIZE'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          CTX=.ai-review/review_context.txt
+          PAYLOAD=ai_review_payload.json
+          get() { grep -E "^$1=" "$CTX" | head -1 | cut -d= -f2-; }
+
+          RUN_URL=$(get RUN_URL)
+          MODEL=$(get MODEL)
+          REVIEW_TYPE=$(get REVIEW_TYPE)
+          BEFORE_SHA=$(get BEFORE_SHA)
+          PR_NUMBER=$(get PR_NUMBER)
+          GITHUB_REPOSITORY=$(get GITHUB_REPOSITORY)
+          HEAD_SHA=$(get HEAD_SHA)
+
+          # Resolve head SHA (empty on issue_comment); mirrors the Verify step.
+          if [ -z "$HEAD_SHA" ]; then
+            HEAD_SHA=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq .head.sha)
+          fi
+          : "${HEAD_SHA:?could not resolve PR head SHA}"
+          : "${RUN_URL:?could not read RUN_URL from review context}"
+
+          # Normalize the all-zeros "before" SHA to empty (matches the rest of the workflow).
+          case "$BEFORE_SHA" in 0000000*) BEFORE_SHA="" ;; esac
+
+          # Validate the model output: exactly ONE JSON object, a string body with no
+          # UNSUBSTITUTED prompt placeholder ({{SUMMARY}} etc. - quoted template code
+          # like {{ price }} is allowed), and comments is an array (or null/absent).
+          # Fail loudly: no review posts, the Verify watchdog alerts.
+          [ -s "$PAYLOAD" ] || { echo "::error::no payload written by model"; exit 1; }
+          jq -e -s 'length==1 and (.[0]|type=="object" and (.body|type=="string") and (.body|test("\\{\\{(READINESS|SUMMARY|HOUSEKEEPING|COMMIT_SHA|MODEL|RUN_URL|BEFORE_SHA|FOLLOW_UP_TAG)\\}\\}")|not) and ((.comments|type=="array") or (.comments==null)))' "$PAYLOAD" >/dev/null 2>&1 \
+            || { echo "::error::payload failed validation"; exit 1; }
+
+          # Anti-forgery: neutralise any literal claude-code marker/footer the model
+          # echoed, so it cannot forge the head-SHA marker the Verify watchdog keys on.
+          # Narrowed to the "claude-code" family so unrelated prose (e.g. a quoted
+          # <!-- ai-review: skip-testing-check --> opt-out marker) stays intact. Split
+          # pipe so a jq failure aborts under set -e, not a silently empty body.
+          RAW_BODY=$(jq -r '.body' "$PAYLOAD")
+          CONTENT=$(printf '%s' "$RAW_BODY" | sed -E -e 's/<!--[[:space:]]*ai-review:[[:space:]]*claude-code/<!-- ai-review[stripped]: claude-code/g' -e 's/<!--[[:space:]]*ai-review-footer[[:space:]]*-->/<!-- ai-review-footer[stripped] -->/g')
+
+          FOLLOW_UP_TAG=""
+          if [ "${REVIEW_TYPE:-first}" != "first" ]; then FOLLOW_UP_TAG=" (follow-up)"; fi
+
+          MARKER=$(printf '<!-- ai-review: claude-code gha sha:%s before:%s -->' "$HEAD_SHA" "$BEFORE_SHA")
+          FOOTER=$(printf '\n\n---\n<!-- ai-review-footer -->\n<sub>Automatic review%s · <code>%s</code> · <a href="%s">Workflow run</a></sub>\n\n<details><summary><sub>How to reply to a finding</sub></summary>\n\nReply on this review (or inline at the line the finding refers to) with one of:\n\n- `@claude addressed` - I made the change. Bot verifies against the next diff before marking resolved.\n- `@claude rejected: <reason>` - Will not fix; reason gets quoted on the next review.\n- `@claude not-applicable` - Finding does not apply (wrong file, already covered elsewhere, etc.).\n\nThe bot honours these on the next review pass.\n\n</details>' "$FOLLOW_UP_TAG" "$MODEL" "$RUN_URL")
+
+          jq -n --arg sha "$HEAD_SHA" --arg marker "$MARKER" --arg content "$CONTENT" --arg footer "$FOOTER" --slurpfile p "$PAYLOAD" \
+            '{commit_id:$sha, event:"COMMENT", body:($marker + "\n" + $content + $footer), comments:(($p[0].comments // []) | map(if (.body|type)=="string" then .body |= gsub("<!--[[:space:]]*ai-review:[[:space:]]*claude-code"; "<!-- ai-review[stripped]: claude-code") else . end))}' \
+            > ai_review_payload.final.json
+
+          # Belt-and-suspenders: the run URL must be present before we POST.
+          jq -e --arg u "$RUN_URL" '.body | contains($u)' ai_review_payload.final.json >/dev/null \
+            || { echo "::error::run URL missing from assembled footer"; exit 1; }
+
+          # Posts with the in-action GITHUB_TOKEN (the claude[bot] app token).
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews" -X POST --input ai_review_payload.final.json
+          FINALIZE
 
       - name: AI Code Review
         id: ai-review
@@ -432,15 +501,12 @@ jobs:
             RUN CONTEXT
             Use the Read tool to read the file `.ai-review/review_context.txt` (relative to your working directory). It has KEY=value lines, one per line:
             - REVIEW_TYPE - "first", "tier1", or "tier2" (see FOLLOW-UP REVIEW HANDLING)
-            - BEFORE_SHA - the previous push head SHA ("before"); may be empty
-            - MODEL - the model id running this review
-            - RUN_URL - the workflow run URL
             - PR_NUMBER - the number of the PR under review
             - GITHUB_REPOSITORY - the "owner/repo" slug used in gh api paths
 
             `.ai-review/` is READ-ONLY context the workflow prepared for you. Write your output ONLY to `./ai_review_payload.json` in the working directory (the Write tool is allowlisted for exactly that path). Do NOT write the payload, helper scripts, or any scratch file inside `.ai-review/`: those writes are denied and waste turns.
 
-            CRITICAL - NO SHELL VARIABLES IN COMMANDS. Your FIRST action is to read `.ai-review/review_context.txt` and note the literal values. Claude Code denies any Bash command containing a shell-variable expansion (e.g. `$PR_NUMBER`, `${PR_NUMBER}`, `$GITHUB_REPOSITORY`, `${RUNNER_TEMP}`): the command is blocked before it runs, you waste a turn, and you may run out of turns before posting the review. Throughout these instructions, `<PR_NUMBER>` is a PLACEHOLDER for the literal PR_NUMBER value, and `<REPO>` is a PLACEHOLDER for the literal GITHUB_REPOSITORY value (the "owner/repo" slug). Substitute the literals you read; never leave the angle-bracket placeholder text in a command, and never use a shell variable. Example: if PR_NUMBER=4330 and GITHUB_REPOSITORY=woocommerce/woocommerce-bookings, run `gh pr diff 4330` and `gh api "repos/woocommerce/woocommerce-bookings/pulls/4330/reviews"`, never `gh pr diff <PR_NUMBER>` and never `gh pr diff "$PR_NUMBER"`. The same applies to any value you WRITE into a file (e.g. the review body marker/footer): use the literal value, never a literal "$NAME" or "{{NAME}}".
+            CRITICAL - NO SHELL VARIABLES IN COMMANDS. Your FIRST action is to read `.ai-review/review_context.txt` and note the literal values. Claude Code denies any Bash command containing a shell-variable expansion (e.g. `$PR_NUMBER`, `${PR_NUMBER}`, `$GITHUB_REPOSITORY`, `${RUNNER_TEMP}`): the command is blocked before it runs, you waste a turn, and you may run out of turns before posting the review. Throughout these instructions, `<PR_NUMBER>` is a PLACEHOLDER for the literal PR_NUMBER value, and `<REPO>` is a PLACEHOLDER for the literal GITHUB_REPOSITORY value (the "owner/repo" slug). Substitute the literals you read; never leave the angle-bracket placeholder text in a command, and never use a shell variable. Example: if PR_NUMBER=4330 and GITHUB_REPOSITORY=woocommerce/woocommerce-bookings, run `gh pr diff 4330` and `gh api "repos/woocommerce/woocommerce-bookings/pulls/4330/reviews"`, never `gh pr diff <PR_NUMBER>` and never `gh pr diff "$PR_NUMBER"`. The same applies to any value you WRITE into a file (e.g. values in the review body or inline comments): use the literal value, never a literal "$NAME" or "{{NAME}}".
 
             OBJECTIVE
             Review the code changes for correctness, security, backwards compatibility, and WooCommerce best practices. Be concise. If everything looks good, say so briefly. Only provide detailed feedback when there are meaningful improvements to suggest.
@@ -539,35 +605,24 @@ jobs:
             POSTING COMMENTS (use batched review API via file)
             Post ALL comments as a SINGLE review to avoid spamming notifications.
 
-            Step 1: Get the latest commit SHA:
-               gh api "repos/<REPO>/pulls/<PR_NUMBER>" --jq '.head.sha'
-
-            Step 2: Use the Write tool to create a JSON file at ./ai_review_payload.json (in the working directory, NOT inside .ai-review/).
-            Replace {{COMMIT_SHA}} with the SHA from Step 1.
-            Replace {{SUMMARY}} with your review summary (see below).
-            Replace the run-context placeholders with their resolved values, taken from `.ai-review/review_context.txt` (KEY=value lines):
-            - {{BEFORE_SHA}} -> the BEFORE_SHA value (may be empty; if empty, leave it empty so the marker reads "before:").
-            - {{MODEL}} -> the MODEL value.
-            - {{RUN_URL}} -> the RUN_URL value.
-            Never write a literal "$NAME" or "{{...}}" placeholder into the payload — every placeholder must be replaced with a concrete value. After writing ./ai_review_payload.json, confirm it contains no remaining "{{" or "}}" sequence; if any remain, fix them before submitting.
-            Ensure all string values are properly JSON-escaped: double quotes as \", backslashes as \\, newlines as \n.
-            The `path` in each comment must be relative to the repository root, exactly as shown in the diff output.
-            The `line` must be the line number in the new version of the file (the + side of the diff).
+            Use the Write tool to create ./ai_review_payload.json (in the working directory, NOT inside .ai-review/). Write ONLY the review content and inline comments. Do NOT write a marker comment, a footer, a "Workflow run" link, a "How to reply to a finding" block, or a commit_id: the finalize script (see SUBMITTING below) stamps the marker, footer, and commit_id and posts the review. The file must be exactly this shape:
 
                {
-                 "commit_id": "{{COMMIT_SHA}}",
                  "event": "COMMENT",
-                 "body": "<!-- ai-review: claude-code gha sha:{{COMMIT_SHA}} before:{{BEFORE_SHA}} -->\n{{READINESS}}{{SUMMARY}}\n{{HOUSEKEEPING}}\n\n---\n<!-- ai-review-footer -->\n<sub>Automatic review{{FOLLOW_UP_TAG}} · <code>{{MODEL}}</code> · <a href=\"{{RUN_URL}}\">Workflow run</a></sub>\n\n<details><summary><sub>How to reply to a finding</sub></summary>\n\nReply on this review (or inline at the line the finding refers to) with one of:\n\n- `@claude addressed` - I made the change. Bot verifies against the next diff before marking resolved.\n- `@claude rejected: <reason>` - Will not fix; reason gets quoted on the next review.\n- `@claude not-applicable` - Finding does not apply (wrong file, already covered elsewhere, etc.).\n\nThe bot honours these on the next review pass.\n\n</details>",
+                 "body": "{{READINESS}}{{SUMMARY}}\n{{HOUSEKEEPING}}",
                  "comments": [
                    {"path": "relative/file/path.php", "line": 42, "body": "comment text here"},
                    ...
                  ]
                }
 
+            Replace {{READINESS}}, {{SUMMARY}}, and {{HOUSEKEEPING}} with their resolved values (see below); leave nothing in angle brackets or double braces. Ensure all string values are properly JSON-escaped: double quotes as \", backslashes as \\, newlines as \n.
+            The `path` in each comment must be relative to the repository root, exactly as shown in the diff output.
+            The `line` must be the line number in the new version of the file (the + side of the diff).
+
             For {{SUMMARY}}:
             - First reviews: "AI Code Review - Found <N> potential issues" (or "No issues found" if none). If there are zero code findings but {{READINESS}} rendered a "Not ready" line, use "AI Code Review - No blocking code issues found; see the Review readiness note above." instead — never pair "No issues found" / "The changes look good" with a non-empty {{READINESS}} line.
             - Follow-up reviews (tier1/tier2): "AI Code Review - Follow-up" followed by the per-issue reconciliation list (each prior issue on its own line as `- <issue ref>: resolved | still-open | obsolete - <one-line note>`) and then "New issues: <N>"
-            For {{FOLLOW_UP_TAG}}: replace with " (follow-up)" for tier1/tier2 reviews, or "" (empty) for first reviews.
             For {{HOUSEKEEPING}}: render the trailing PR-housekeeping block (see PR HOUSEKEEPING below). Empty string if there is nothing to put in it.
             For {{READINESS}}: a single prominent line, based SOLELY on TESTING INSTRUCTIONS & REPRODUCTION STEPS, computed fresh from the CURRENT PR description on every run.
             - When NOT firing — the PR is exempt, instructions are present and a reviewer could reach a pass/fail verdict, an opt-out marker/label is present, or (tier1/tier2 only) the gap was already rejected / marked not-applicable by the author: substitute {{READINESS}} with the empty string — zero characters, no newline, so {{SUMMARY}} sits flush against the marker comment's newline. "Render an empty {{READINESS}} line" anywhere in this prompt means exactly this empty-string substitution, NOT a literal blank line. Silence means ready — never render a "ready" line.
@@ -576,10 +631,12 @@ jobs:
               The <one-line summary of the gaps> must be YOUR paraphrase, never a quote of the PR description: one clause, no markdown/HTML, JSON-escaped (quotes as \", backslashes as \\) exactly as required for {{SUMMARY}}, on a single line — never introduce `-->`, `<!--`, or extra newlines.
             - This is review-readiness PROCESS feedback, not a code finding: do NOT apply a [fix here]/[follow-up]/[nit] label, and NEVER emit it as an inline comment. The itemised gaps still go in the PR HOUSEKEEPING block; this line is the one-line headline only.
 
-            Step 3: Submit the review using the file as input:
-               gh api "repos/<REPO>/pulls/<PR_NUMBER>/reviews" -X POST --input ai_review_payload.json
+            SUBMITTING
+            Do NOT post the review yourself (no `gh api ... /reviews` POST). After writing ./ai_review_payload.json, your FINAL action is to run exactly this one command, with no arguments and no shell variables:
+               bash .ai-review/finalize.sh
+            That script validates your payload, stamps the marker + footer (including the workflow-run URL) and the commit_id, and posts the review. If it prints an `::error::`, fix ./ai_review_payload.json and run `bash .ai-review/finalize.sh` again. You are done once it posts.
 
-            ALWAYS post a review, even if no issues are found. If the code looks good AND {{READINESS}} is empty, submit a review with an empty comments array and a summary like "AI Code Review - No issues found. The changes look good." If the code looks good but {{READINESS}} fired a "Not ready" line, keep the comments array empty but use "AI Code Review - No blocking code issues found; see the Review readiness note above." so the body never says the changes look good while the headline says Not ready.
+            ALWAYS deliver a review, even if no issues are found: write the payload file AND then run `bash .ai-review/finalize.sh`. Writing the payload alone does NOT post the review - the review is only delivered once finalize.sh runs and posts it, so running it is mandatory and is your last action every time. If the code looks good AND {{READINESS}} is empty, write a payload with an empty comments array and a summary like "AI Code Review - No issues found. The changes look good." If the code looks good but {{READINESS}} fired a "Not ready" line, keep the comments array empty but use "AI Code Review - No blocking code issues found; see the Review readiness note above." so the body never says the changes look good while the headline says Not ready.
 
             PR HOUSEKEEPING
             Check the PR description for:
@@ -722,8 +779,8 @@ jobs:
             5. Analyze the diff against the CODE REVIEW FOCUS areas; label every finding [fix here] / [follow-up] / [nit]
             6. For each potential issue, check if already covered (skip if so)
             7. Build the {{SUMMARY}} (per-issue reconciliation lines for tier1/tier2, or counts for first) and the {{HOUSEKEEPING}} block (or empty)
-            8. Use the Write tool to create ./ai_review_payload.json in the working directory, NOT inside .ai-review/ which is read-only (include the HTML marker comment, the footer sentinel, and the cheat-sheet block exactly as shown)
-            9. Submit: gh api "repos/<REPO>/pulls/<PR_NUMBER>/reviews" -X POST --input ai_review_payload.json
+            8. Use the Write tool to create ./ai_review_payload.json in the working directory (NOT inside .ai-review/, which is read-only), containing ONLY event, body (the review content), and comments. Do NOT include a marker, footer, or commit_id: the finalize script stamps those.
+            9. Run `bash .ai-review/finalize.sh` (see SUBMITTING) as your final action to validate, stamp, and post the review.
 
           # Read() path semantics (gitignore-style): no leading slash = relative to
           # the model's cwd (the checkout), single leading slash = relative to the
@@ -734,7 +791,7 @@ jobs:
           # git show/grep, which are allowlisted below.
           claude_args: >
             --model ${{ inputs.model || 'claude-opus-4-6' }}
-            --allowedTools "Read(.ai-review/**),Glob,Grep,Write(./ai_review_payload.json),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api:*),Bash(git show:*),Bash(git diff:*),Bash(git log:*),Bash(git blame:*),Bash(git rev-parse:*),Bash(git ls-files:*),Bash(git grep:*)"
+            --allowedTools "Read(.ai-review/**),Glob,Grep,Write(./ai_review_payload.json),Bash(bash .ai-review/finalize.sh:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api:*),Bash(git show:*),Bash(git diff:*),Bash(git log:*),Bash(git blame:*),Bash(git rev-parse:*),Bash(git ls-files:*),Bash(git grep:*)"
 
       - name: Verify a review was posted
         # Fail loudly when claude-code-action reports success but posts no review

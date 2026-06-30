@@ -78,7 +78,7 @@ jobs:
       group: ai-review-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number }}-${{ github.event_name }}
       cancel-in-progress: true
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ inputs.timeout_minutes || 30 }}
+    timeout-minutes: ${{ inputs.timeout_minutes || 45 }}
     permissions:
       contents: read
       pull-requests: write
@@ -510,7 +510,7 @@ jobs:
         # and FAILS the step (a step timeout is a failure, not a job cancel), so
         # the failure() alert fires, with job budget left to send it. A bare job
         # timeout would mark the job cancelled, which the alert gate skips.
-        timeout-minutes: 25
+        timeout-minutes: 35
         # SECURITY: do NOT add an env: block exposing GH_TOKEN/GITHUB_TOKEN here. The
         # model's shell would inherit it; the allowlist (no printenv/cat) plus Read(./**)
         # keep it unreachable today, and an env: re-export would remove that margin (QAO-568).
@@ -819,6 +819,18 @@ jobs:
           claude_args: >
             --model ${{ inputs.model || 'claude-opus-4-6' }}
             --allowedTools "Read(./**),Glob,Grep,Write(./ai_review_payload.json),Bash(bash .ai-review/finalize.sh:*)"
+
+      # TEMPORARY (QAO-568): upload the model execution transcript so we can read why a
+      # run is slow or posts no review (turn count, tool calls). Empty when a run is
+      # killed at the step timeout before the file is written, which is why the timeout
+      # is also raised below so more runs complete and capture it. 1-day retention.
+      - name: Upload execution transcript (debug)
+        if: always() && steps.ai-review.outputs.execution_file != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ai-review-execution-${{ github.run_id }}
+          path: ${{ steps.ai-review.outputs.execution_file }}
+          retention-days: 1
 
       - name: Verify a review was posted
         # Fail loudly when claude-code-action reports success but posts no review

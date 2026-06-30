@@ -816,9 +816,13 @@ jobs:
           # denial and cannot bypass finalize.sh with a direct gh api POST. Read is
           # scoped to the checkout (./**): it covers .ai-review/ and the source tree but
           # cannot reach /proc, $HOME, or RUNNER_TEMP (process-env / credential exfil).
+          # Write is UNSCOPED on purpose: a scoped Write(./ai_review_payload.json) is
+          # denied by current Claude Code (the path pattern does not match the model's
+          # write path), which silently blocked every review (QAO-568). The model only
+          # ever writes the payload, and the runner is ephemeral, so unscoped Write is fine.
           claude_args: >
             --model ${{ inputs.model || 'claude-opus-4-6' }}
-            --allowedTools "Read(./**),Glob,Grep,Write(./ai_review_payload.json),Bash(bash .ai-review/finalize.sh:*)"
+            --allowedTools "Read(./**),Glob,Grep,Write,Bash(bash .ai-review/finalize.sh:*)"
 
       # TEMPORARY (QAO-568): upload the model execution transcript so we can read why a
       # run is slow or posts no review (turn count, tool calls). Empty when a run is

@@ -524,7 +524,14 @@ jobs:
           CLI_VERSION: 2.1.195
         run: |
           set -euo pipefail
-          npm install -g "@anthropic-ai/claude-code@${CLI_VERSION}"
+          # SECURITY: this step runs inside the PR checkout (it must stay after
+          # the followup gate, whose output only exists post-checkout), and npm
+          # reads ./.npmrc from the working directory — a PR could commit one
+          # that repoints the @anthropic-ai scope at a rogue registry. Install
+          # from RUNNER_TEMP and force the registry so the checkout can't
+          # influence what binary we hand ANTHROPIC_API_KEY to.
+          cd "$RUNNER_TEMP"
+          npm install -g --@anthropic-ai:registry=https://registry.npmjs.org/ "@anthropic-ai/claude-code@${CLI_VERSION}"
           CLAUDE_BIN=$(command -v claude)
           echo "path=${CLAUDE_BIN}" >> "$GITHUB_OUTPUT"
           echo "Pinned Claude Code CLI ${CLI_VERSION} at ${CLAUDE_BIN}"

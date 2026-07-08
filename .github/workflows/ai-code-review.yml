@@ -504,6 +504,39 @@ jobs:
           gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews" -X POST --input ai_review_payload.final.json
           FINALIZE
 
+      # Pin the Claude Code CLI so a silent upstream CLI release cannot change
+      # tool behaviour mid-flight. In Jun 2026 an unpinned CLI update changed the
+      # Write-tool path scoping and silently broke payload writes across repos.
+      # The claude-code-action installs the LATEST CLI at runtime unless given an
+      # executable; path_to_claude_code_executable (below) skips that auto-install.
+      #
+      # HOW TO BUMP: change CLI_VERSION below in its own PR. Confirm the version is
+      # live on npm (npm view @anthropic-ai/claude-code@<v> version) and that a
+      # review still posts, then merge. Keep it reasonably current — the action
+      # warns that an older CLI can lag new action features.
+      - name: Install pinned Claude Code CLI
+        id: pin-cli
+        if: |
+          steps.check-team.outputs.is_member == 'true' &&
+          steps.followup.outputs.skip != 'true' &&
+          steps.trusted_files.outputs.skip == 'false'
+        env:
+          CLI_VERSION: 2.1.195
+        run: |
+          set -euo pipefail
+          # SECURITY: this step runs inside the PR checkout (it must stay after
+          # the followup gate, whose output only exists post-checkout), and npm
+          # reads ./.npmrc from the working directory — a PR could commit one
+          # that repoints the @anthropic-ai scope at a rogue registry. Install
+          # from RUNNER_TEMP and force the registry so the checkout can't
+          # influence what binary we hand ANTHROPIC_API_KEY to.
+          cd "$RUNNER_TEMP"
+          npm install -g --@anthropic-ai:registry=https://registry.npmjs.org/ "@anthropic-ai/claude-code@${CLI_VERSION}"
+          CLAUDE_BIN=$(command -v claude)
+          echo "path=${CLAUDE_BIN}" >> "$GITHUB_OUTPUT"
+          echo "Pinned Claude Code CLI ${CLI_VERSION} at ${CLAUDE_BIN}"
+          "$CLAUDE_BIN" --version
+
       - name: AI Code Review
         id: ai-review
         # Step-level cap below the 30-min job timeout. A runaway model hits this
@@ -521,6 +554,8 @@ jobs:
         uses: anthropics/claude-code-action@a92e7c70a4da9793dc164451d829089dc057a464 # v1.0.159
         with:
           anthropic_api_key: ${{ secrets.AI_CODE_REVIEW_ANTHROPIC_API_KEY }}
+          # Pinned CLI from the step above; skips the action's runtime auto-install.
+          path_to_claude_code_executable: ${{ steps.pin-cli.outputs.path }}
           prompt: |
             You are a senior code reviewer for WooCommerce extensions.
             Review the PR diff for this repository.

@@ -47,6 +47,7 @@ jobs:
   # - Pull request events on forks: https://docs.github.com/en/actions/writing-workflows/choosing-when-your-workflow-runs/events-that-trigger-workflows#pull_request_target
   guard:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions: {}
     steps:
       - name: Reject callers outside allowed orgs

@@ -46,7 +46,7 @@ jobs:
   # - Reusing workflows: https://docs.github.com/en/actions/sharing-automations/reusing-workflows
   # - Pull request events on forks: https://docs.github.com/en/actions/writing-workflows/choosing-when-your-workflow-runs/events-that-trigger-workflows#pull_request_target
   guard:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
     steps:
@@ -78,7 +78,7 @@ jobs:
       # Per-event namespace so a comment trigger does not cancel an in-flight first review.
       group: ai-review-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number }}-${{ github.event_name }}
       cancel-in-progress: true
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: ${{ inputs.timeout_minutes || 45 }}
     permissions:
       contents: read

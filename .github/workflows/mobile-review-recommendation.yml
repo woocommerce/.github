@@ -37,7 +37,7 @@ jobs:
       # Two quick pushes would otherwise race, and the label could end up reflecting a stale head commit.
       group: mobile-review-recommendation-${{ github.repository }}-${{ github.event.pull_request.number }}
       cancel-in-progress: true
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: read

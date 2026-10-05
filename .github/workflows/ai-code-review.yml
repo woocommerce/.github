@@ -7,7 +7,7 @@ on:
         description: 'Claude model to use'
         required: false
         type: string
-        default: 'claude-opus-4-8'
+        default: 'claude-opus-5-5'
       timeout_minutes:
         description: 'Timeout for the review job'
         required: false
@@ -395,7 +395,7 @@ jobs:
         env:
           REVIEW_TYPE: ${{ steps.followup.outputs.review_type }}
           BEFORE_SHA: ${{ github.event.before }}
-          MODEL: ${{ inputs.model || 'claude-opus-4-6' }}
+          MODEL: ${{ inputs.model || 'claude-opus-5-5' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
@@ -855,7 +855,7 @@ jobs:
           # Payload write is scoped via Edit(...): the Write tool shares the Edit(...)
           # path specifier, so a Write(...) rule matches nothing.
           claude_args: >
-            --model ${{ inputs.model || 'claude-opus-4-6' }}
+            --model ${{ inputs.model || 'claude-opus-5-5' }}
             --allowedTools "Read(./**),Glob,Grep,Edit(ai_review_payload.json),Bash(bash .ai-review/finalize.sh:*)"
 
       # TEMPORARY (QAO-568): upload the model execution transcript so we can read why a
@@ -937,7 +937,7 @@ jobs:
           T_PR: ${{ github.event.pull_request.number || github.event.issue.number }}
           T_PR_AUTHOR: ${{ github.event.pull_request.user.login || github.event.issue.user.login }}
           T_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          T_MODEL: ${{ inputs.model || 'claude-opus-4-6' }}
+          T_MODEL: ${{ inputs.model || 'claude-opus-5-5' }}
           T_BUILD_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           T_REVIEW_TYPE: ${{ steps.followup.outputs.review_type }}
         shell: bash

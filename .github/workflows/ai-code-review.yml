@@ -522,7 +522,7 @@ jobs:
           steps.followup.outputs.skip != 'true' &&
           steps.trusted_files.outputs.skip == 'false'
         env:
-          CLI_VERSION: 2.1.273
+          CLI_VERSION: 2.1.289
         run: |
           set -euo pipefail
           # SECURITY: this step runs inside the PR checkout (it must stay after

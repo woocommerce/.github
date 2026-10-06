@@ -552,7 +552,7 @@ jobs:
           steps.check-team.outputs.is_member == 'true' &&
           steps.followup.outputs.skip != 'true' &&
           steps.trusted_files.outputs.skip == 'false'
-        uses: anthropics/claude-code-action@a92e7c70a4da9793dc164451d829089dc057a464 # v1.0.159
+        uses: anthropics/claude-code-action@a08f8913d58013599003b37d3a9174d27e99ac90 # v1.0.172
         with:
           anthropic_api_key: ${{ secrets.AI_CODE_REVIEW_ANTHROPIC_API_KEY }}
           # Pinned CLI from the step above; skips the action's runtime auto-install.

@@ -7,7 +7,7 @@ on:
         description: 'Claude model to use'
         required: false
         type: string
-        default: 'claude-opus-4-8'
+        default: 'claude-opus-5-5'
       timeout_minutes:
         description: 'Timeout for the review job'
         required: false
@@ -46,7 +46,7 @@ jobs:
   # - Reusing workflows: https://docs.github.com/en/actions/sharing-automations/reusing-workflows
   # - Pull request events on forks: https://docs.github.com/en/actions/writing-workflows/choosing-when-your-workflow-runs/events-that-trigger-workflows#pull_request_target
   guard:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
     steps:
@@ -78,7 +78,7 @@ jobs:
       # Per-event namespace so a comment trigger does not cancel an in-flight first review.
       group: ai-review-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number }}-${{ github.event_name }}
       cancel-in-progress: true
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: ${{ inputs.timeout_minutes || 45 }}
     permissions:
       contents: read
@@ -239,7 +239,7 @@ jobs:
 
       - name: Checkout repository
         if: steps.check-team.outputs.is_member == 'true' && steps.trusted_files.outputs.skip == 'false'
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -395,7 +395,7 @@ jobs:
         env:
           REVIEW_TYPE: ${{ steps.followup.outputs.review_type }}
           BEFORE_SHA: ${{ github.event.before }}
-          MODEL: ${{ inputs.model || 'claude-opus-4-6' }}
+          MODEL: ${{ inputs.model || 'claude-opus-5-5' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
@@ -522,7 +522,7 @@ jobs:
           steps.followup.outputs.skip != 'true' &&
           steps.trusted_files.outputs.skip == 'false'
         env:
-          CLI_VERSION: 2.1.273
+          CLI_VERSION: 2.1.289
         run: |
           set -euo pipefail
           # SECURITY: this step runs inside the PR checkout (it must stay after
@@ -855,7 +855,7 @@ jobs:
           # Payload write is scoped via Edit(...): the Write tool shares the Edit(...)
           # path specifier, so a Write(...) rule matches nothing.
           claude_args: >
-            --model ${{ inputs.model || 'claude-opus-4-6' }}
+            --model ${{ inputs.model || 'claude-opus-5-5' }}
             --allowedTools "Read(./**),Glob,Grep,Edit(ai_review_payload.json),Bash(bash .ai-review/finalize.sh:*)"
 
       # TEMPORARY (QAO-568): upload the model execution transcript so we can read why a
@@ -864,7 +864,7 @@ jobs:
       # is also raised below so more runs complete and capture it. 1-day retention.
       - name: Upload execution transcript (debug)
         if: always() && steps.ai-review.outputs.execution_file != ''
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ai-review-execution-${{ github.run_id }}
           path: ${{ steps.ai-review.outputs.execution_file }}
@@ -937,7 +937,7 @@ jobs:
           T_PR: ${{ github.event.pull_request.number || github.event.issue.number }}
           T_PR_AUTHOR: ${{ github.event.pull_request.user.login || github.event.issue.user.login }}
           T_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          T_MODEL: ${{ inputs.model || 'claude-opus-4-6' }}
+          T_MODEL: ${{ inputs.model || 'claude-opus-5-5' }}
           T_BUILD_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           T_REVIEW_TYPE: ${{ steps.followup.outputs.review_type }}
         shell: bash

@@ -6,4 +6,4 @@ Shape the future of commerce. [Come join us!](https://woocommerce.com/careers/)
 
 Report vulnerabilities through [Automattic's security reporting process](https://automattic.com/security/)
 
-<sub>Organization maintainers: [Beau Lebens (@beaulebens)](https://github.com/beaulebens), [Darren Ethier(@nerrad)](https://github.com/nerrad), [Rafael Meneses (@rtio)](https://github.com/orgs/woocommerce/people/rtio)</sub>
+<sub>Organization maintainers: [Beau Lebens (@beaulebens)](https://github.com/beaulebens), [Darren Ethier (@nerrad)](https://github.com/nerrad), [Rafael Meneses (@rtio)](https://github.com/orgs/woocommerce/people/rtio)</sub>

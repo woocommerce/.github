@@ -1,0 +1,83 @@
+name: Verify candidate ZIP
+description: Download and verify the repository-name.zip production archive from the current workflow run on Linux.
+inputs:
+  artifact-id:
+    description: ID of the production ZIP artifact.
+    required: true
+  source-sha:
+    description: Source commit recorded by the build job.
+    required: true
+  expected-source-sha:
+    description: Source commit under test.
+    required: true
+  sha256:
+    description: SHA-256 of the ZIP inside the Actions artifact.
+    required: true
+  plugin-slug:
+    description: ZIP's top-level directory and plugin main file basename.
+    required: true
+  destination:
+    description: A new directory in the workspace for the extracted plugin.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Validate candidate identity
+      id: candidate
+      shell: bash
+      env:
+        ARTIFACT_ID: ${{ inputs.artifact-id }}
+        SOURCE_SHA: ${{ inputs.source-sha }}
+        EXPECTED_SOURCE_SHA: ${{ inputs.expected-source-sha }}
+        ZIP_SHA256: ${{ inputs.sha256 }}
+        PLUGIN_SLUG: ${{ inputs.plugin-slug }}
+        DESTINATION: ${{ inputs.destination }}
+      run: |
+        if [[ ! "$PLUGIN_SLUG" =~ ^[a-z0-9][a-z0-9-]*$ || ! "$DESTINATION" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]; then
+          echo "::error::Provide a plugin slug and a single workspace directory name."
+          exit 1
+        fi
+        if [[ ! "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ || ! "$ZIP_SHA256" =~ ^[a-f0-9]{64}$ ]]; then
+          echo "::error::The production candidate needs one artifact ID and a SHA-256 digest."
+          exit 1
+        fi
+        if [[ ! "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ || "$SOURCE_SHA" != "$EXPECTED_SOURCE_SHA" ]]; then
+          echo "::error::The production candidate does not match the requested source commit."
+          exit 1
+        fi
+        download=$(mktemp -d "${RUNNER_TEMP}/woo-candidate.XXXXXX")
+        printf 'download=%s\n' "$download" >> "$GITHUB_OUTPUT"
+
+    - name: Download the exact production candidate
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        artifact-ids: ${{ inputs.artifact-id }}
+        path: ${{ steps.candidate.outputs.download }}
+
+    - name: Verify and unpack the production ZIP
+      shell: bash
+      env:
+        DOWNLOAD: ${{ steps.candidate.outputs.download }}
+        ARTIFACT_ID: ${{ inputs.artifact-id }}
+        SOURCE_SHA: ${{ inputs.source-sha }}
+        ZIP_SHA256: ${{ inputs.sha256 }}
+        PLUGIN_SLUG: ${{ inputs.plugin-slug }}
+        DESTINATION: ${{ inputs.destination }}
+      run: |
+        zip_file="$DOWNLOAD/${GITHUB_REPOSITORY#*/}.zip"
+        printf '%s  %s\n' "$ZIP_SHA256" "$zip_file" | sha256sum --check -
+        cd "$GITHUB_WORKSPACE" || exit 1
+        mkdir -- "$DESTINATION"
+        unzip -q "$zip_file" -d "$DESTINATION"
+
+        shopt -s dotglob nullglob
+        entries=("$DESTINATION"/*)
+        plugin="$DESTINATION/$PLUGIN_SLUG"
+        main_file="$plugin/$PLUGIN_SLUG.php"
+        if [[ ${#entries[@]} != 1 || -L "$plugin" || -L "$main_file" || ! -f "$main_file" ]]; then
+          echo "::error::The production ZIP must contain the expected plugin directory and main file."
+          exit 1
+        fi
+        printf 'Verified artifact %s, source %s, SHA-256 %s.\n' \
+          "$ARTIFACT_ID" "$SOURCE_SHA" "$ZIP_SHA256" >> "$GITHUB_STEP_SUMMARY"

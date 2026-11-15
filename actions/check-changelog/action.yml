@@ -1,0 +1,116 @@
+name: Check changelog
+description: Require a valid Jetpack Changelogger change file in a plugin pull request, unless the pull request is labeled "no changelog", comes from a release branch or from Dependabot. Runs the plugin's bin/check_changelog.sh.
+
+# Use it as the only step of the job that branch protection requires, so the check keeps its name:
+#
+#   on:
+#     pull_request:
+#       types: [opened, edited, synchronize, reopened, ready_for_review, labeled, unlabeled]
+#   jobs:
+#     check-changelog:
+#       name: Check changelog
+#       runs-on: ubuntu-latest
+#       permissions:
+#         contents: read
+#         pull-requests: read
+#       steps:
+#         - uses: woocommerce/.github/actions/check-changelog@<commit SHA>
+#
+# The job always runs to completion: a job skipped by a condition reports as skipped, not as
+# passing. Labels are read live through the API, because the event payload freezes them at
+# trigger time.
+
+inputs:
+  github-token:
+    description: Token that reads the pull request labels and is written to Composer's config.
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Decide what to check
+      id: decide
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+      run: |
+        if [[ -z "$PR_NUMBER" ]]; then
+          echo "::error::Run this action on a pull_request event."
+          exit 1
+        fi
+
+        # Paginated: a pull request can carry more labels than one API page holds.
+        if ! LABELS=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels" --jq '.[].name'); then
+          echo "::error::Could not read the pull request labels, so it is unknown whether a change file is required."
+          exit 1
+        fi
+
+        if grep -qxF 'no changelog' <<< "$LABELS"; then
+          HAS_SKIP_LABEL="true"
+        else
+          HAS_SKIP_LABEL="false"
+        fi
+
+        # skip:     nothing to check at all.
+        # optional: no change file is required, but one that is there is
+        #           still validated. The label waives the entry, not the
+        #           format: a malformed change file merged under the label
+        #           would only surface as a broken release compile.
+        # require:  a change file must be there, and must be valid.
+        if [[ "$HEAD_REPO" == "$GITHUB_REPOSITORY" && "$HEAD_REF" == release/* ]]; then
+          MODE="skip"
+          REASON="Release branch: it compiles the change files rather than adding one."
+        elif [[ "$PR_AUTHOR" == "dependabot[bot]" ]]; then
+          MODE="skip"
+          REASON="Dependabot pull request: dependency bumps are summarized in one entry at release time."
+        elif [[ "$HAS_SKIP_LABEL" == "true" ]]; then
+          MODE="optional"
+          REASON="Labeled 'no changelog', so no change file is required. Any change file in the pull request is still validated."
+        else
+          MODE="require"
+          REASON=""
+        fi
+
+        echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+
+        if [[ -n "$REASON" ]]; then
+          echo "$REASON" >> "$GITHUB_STEP_SUMMARY"
+          echo "$REASON"
+        fi
+
+    - name: Check out the pull request
+      if: steps.decide.outputs.mode != 'skip'
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        # The check diffs against the merge base with the target branch.
+        fetch-depth: 0
+
+    - name: Set up PHP
+      if: steps.decide.outputs.mode != 'skip'
+      uses: $/actions/setup-plugin-env
+      with:
+        php-version: '8.4'
+        github-token: ${{ inputs.github-token }}
+        composer-cache: true
+
+    - name: Install PHP dependencies
+      if: steps.decide.outputs.mode != 'skip'
+      shell: bash
+      run: composer install --prefer-dist --no-progress --no-ansi --no-interaction
+
+    - name: Check the change file
+      if: steps.decide.outputs.mode != 'skip'
+      shell: bash
+      env:
+        MODE: ${{ steps.decide.outputs.mode }}
+      run: |
+        if [[ "$MODE" == "optional" ]]; then
+          bash bin/check_changelog.sh --optional
+        else
+          bash bin/check_changelog.sh
+        fi

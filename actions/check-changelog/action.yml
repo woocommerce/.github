@@ -22,7 +22,7 @@ description: Require a valid Jetpack Changelogger change file in a plugin pull r
 
 inputs:
   github-token:
-    description: Token that reads the pull request labels and is written to Composer's config.
+    description: Token that reads the pull request labels.
     required: false
     default: ${{ github.token }}
 
@@ -95,7 +95,6 @@ runs:
       uses: $/actions/setup-plugin-env
       with:
         php-version: '8.4'
-        github-token: ${{ inputs.github-token }}
         composer-cache: true
 
     - name: Install PHP dependencies

@@ -1,0 +1,51 @@
+name: PHPStan
+
+# `composer phpstan`, after installing the integration stubs in tools/php-stubs when the plugin
+# has them. ORG_DOWNLOADS reads the private stubs; fork pull requests have no access to it.
+#
+#   phpstan:
+#     uses: woocommerce/.github/.github/workflows/plugin-phpstan.yml@<commit SHA>
+#     secrets:
+#       ORG_DOWNLOADS: ${{ secrets.ORG_DOWNLOADS }}
+
+on:
+  workflow_call:
+    secrets:
+      # Reads the private woocommerce/all-plugins repository for tools/php-stubs.
+      ORG_DOWNLOADS:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  phpstan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up PHP and the Composer cache
+        uses: $/actions/setup-plugin-env
+        with:
+          php-version: '8.4'
+          composer-cache: true
+      # Plugins without tools/php-stubs have no integration stubs to install.
+      - name: Install integration stubs
+        if: hashFiles('tools/php-stubs/composer.json') != ''
+        env:
+          ORG_DOWNLOADS: ${{ secrets.ORG_DOWNLOADS }}
+          # Outside the cached directory: the private stubs archive must never reach actions/cache.
+          COMPOSER_CACHE_DIR: ${{ runner.temp }}/php-stubs-cache
+        run: |
+          # Without the token (fork pull requests) the private repository is unreadable and this step fails.
+          if [[ -n "$ORG_DOWNLOADS" ]]; then
+            export COMPOSER_AUTH="{\"github-oauth\":{\"github.com\":\"$ORG_DOWNLOADS\"}}"
+          fi
+          composer install --prefer-dist --no-scripts --no-progress --no-interaction --working-dir=tools/php-stubs
+      - run: composer install --prefer-dist --no-progress --no-interaction
+      - name: Check stub pins against the declared minimums
+        if: hashFiles('tools/php-stubs/vendor/woocommerce/php-stubs/check-pins.php') != ''
+        run: php tools/php-stubs/vendor/woocommerce/php-stubs/check-pins.php
+      - run: composer phpstan

@@ -1,0 +1,86 @@
+name: Set up plugin environment
+description: Set up pnpm and Node.js from the plugin's .nvmrc, and PHP with Composer, optionally restoring the pnpm store and Composer download caches. Run it after checking out the plugin.
+
+# Example:
+#
+#   - uses: woocommerce/.github/actions/setup-plugin-env@<commit SHA>
+#     with:
+#       node: true
+#       node-cache: ${{ inputs.checkout-ref == '' }}
+#       php-version: '8.4'
+#       composer-cache: ${{ inputs.checkout-ref == '' }}
+#
+# Dependency installation stays with the caller, since install flags differ per job.
+
+inputs:
+  node:
+    description: Set up pnpm (from package.json packageManager) and Node.js (from .nvmrc).
+    required: false
+    default: 'false'
+  node-cache:
+    description: Restore and save the pnpm store. Needs pnpm-lock.yaml. Leave off for untrusted or release refs.
+    required: false
+    default: 'false'
+  php-version:
+    description: PHP version to install. Leave empty to skip PHP and keep the runner's own.
+    required: false
+    default: ''
+  php-tools:
+    description: Tools for shivammathur/setup-php, for example "composer, wp-cli".
+    required: false
+    default: composer
+  php-coverage:
+    description: Coverage driver for shivammathur/setup-php (none, pcov or xdebug).
+    required: false
+    default: none
+  php-ini-values:
+    description: php.ini values for shivammathur/setup-php.
+    required: false
+    default: ''
+  github-token:
+    description: Token setup-php writes to Composer's config. Empty by default, because Composer rejects the newer GITHUB_TOKEN format.
+    required: false
+    default: ''
+  composer-cache:
+    description: Restore and save Composer's download cache, keyed by every composer.lock. Leave off for untrusted or release refs.
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - name: Set up pnpm
+      if: inputs.node == 'true'
+      uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+    - name: Set up Node.js
+      if: inputs.node == 'true'
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version-file: .nvmrc
+        cache: ${{ inputs.node-cache == 'true' && 'pnpm' || '' }}
+        package-manager-cache: ${{ inputs.node-cache == 'true' }}
+
+    - name: Set up PHP
+      if: inputs.php-version != ''
+      uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+      with:
+        php-version: ${{ inputs.php-version }}
+        coverage: ${{ inputs.php-coverage }}
+        ini-values: ${{ inputs.php-ini-values }}
+        tools: ${{ inputs.php-tools }}
+        github-token: ${{ inputs.github-token }}
+
+    - name: Get the Composer cache directory
+      if: inputs.composer-cache == 'true'
+      id: composer-cache
+      shell: bash
+      run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+    - name: Cache Composer downloads
+      if: inputs.composer-cache == 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.composer-cache.outputs.dir }}
+        key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
+        restore-keys: ${{ runner.os }}-composer-

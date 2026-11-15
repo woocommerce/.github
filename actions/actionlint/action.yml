@@ -1,0 +1,28 @@
+name: actionlint
+description: Lint the repository's GitHub Actions workflows with a pinned, checksum-verified actionlint release. Run it after checking out the repository.
+
+# Example:
+#
+#   - uses: actions/checkout@<commit SHA>
+#     with:
+#       persist-credentials: false
+#   - uses: woocommerce/.github/actions/actionlint@<commit SHA>
+#
+# actionlint reads the repository's .github/actionlint.yaml when it exists. Embedded shell and
+# Python snippets are not linted.
+
+runs:
+  using: composite
+  steps:
+    - name: Install actionlint 1.7.12
+      shell: bash
+      working-directory: ${{ runner.temp }}
+      run: |
+        curl --fail --silent --show-error --location --output actionlint.tar.gz \
+          https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+        echo '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tar.gz' | sha256sum --check
+        tar -xzf actionlint.tar.gz actionlint
+
+    - name: Lint workflows
+      shell: bash
+      run: '"$RUNNER_TEMP/actionlint" -shellcheck= -pyflakes='

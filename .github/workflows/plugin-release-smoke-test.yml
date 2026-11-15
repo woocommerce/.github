@@ -1,0 +1,129 @@
+name: Release smoke test
+
+# Checks a release branch: the versions in the plugin files (bin/check_versions.sh), PHP lint and
+# JavaScript lint, with a Slack message for the outcome. The caller keeps the `release/**` push
+# trigger and names the Slack channel.
+#
+#   smoke:
+#     name: Smoke test
+#     permissions:
+#       contents: read
+#       checks: write
+#       pull-requests: read
+#     uses: woocommerce/.github/.github/workflows/plugin-release-smoke-test.yml@<commit SHA>
+#     with:
+#       slack-channel: '#team-releases'
+#     secrets:
+#       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+on:
+  workflow_call:
+    inputs:
+      # The Slack channel for the outcome, for example `#team-releases`.
+      slack-channel:
+        type: string
+        required: true
+    secrets:
+      # Slack notifications; without it the notify steps fail quietly.
+      SLACK_WEBHOOK_URL:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+
+    check-versions:
+        name: Check versions
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        outputs:
+          release_version: ${{ steps.export.outputs.version }}
+          config: ${{ steps.config.outputs.json }}
+
+        steps:
+
+            - name: Checkout repository
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                persist-credentials: false
+
+            - name: Read plugin metadata
+              id: config
+              run: bash bin/woo-config.sh --github-output
+
+            - name: Check Versions
+              run: |
+                bash ./bin/check_versions.sh
+                RELEASE_VERSION=$( awk '/Stable tag/ {print}' readme.txt | sed 's/[^0-9.]*\([0-9.]*[-dev]*\).*/\1/' )
+                echo "RELEASE_VERSION=${RELEASE_VERSION}" >> $GITHUB_ENV
+
+            - name: Export release version
+              id: export
+              run: echo "version=$RELEASE_VERSION" >> $GITHUB_OUTPUT
+
+    php-lint:
+        name: PHP
+        needs: check-versions
+        uses: ./.github/workflows/plugin-php-lint.yml
+
+    js-lint:
+        if: ${{ fromJSON(needs.check-versions.outputs.config).capabilities.js }}
+        permissions:
+          contents: read
+          checks: write
+          pull-requests: read
+        name: JS Linting
+        needs: check-versions
+        uses: ./.github/workflows/plugin-js-lint.yml
+
+    handle-success:
+        if: ${{ !failure() && !cancelled() && needs.php-lint.result == 'success' }}
+        needs: [check-versions, php-lint, js-lint]
+        name: Handle success
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        permissions: {}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          RELEASE_VERSION: ${{ needs.check-versions.outputs.release_version }}
+        steps:
+          - uses: act10ns/slack@d96404edccc6d6467fc7f8134a420c851b1e9054 # v2
+            with:
+                status: success
+                message: "<{{{workflowUrl}}}|_{{workflow}}_> for ${{ github.repository }} *v${{ env.RELEASE_VERSION }}* completed."
+                channel: ${{ inputs.slack-channel }}
+
+    handle-cancelled:
+        if: ${{ cancelled() }}
+        needs: [check-versions, php-lint, js-lint]
+        name: Handle cancellation
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        permissions: {}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          RELEASE_VERSION: ${{ needs.check-versions.outputs.release_version }}
+        steps:
+          - uses: act10ns/slack@d96404edccc6d6467fc7f8134a420c851b1e9054 # v2
+            with:
+                status: cancelled
+                message: "<{{{workflowUrl}}}|_{{workflow}}_> for ${{ github.repository }} *v${{ env.RELEASE_VERSION }}* cancelled."
+                channel: ${{ inputs.slack-channel }}
+
+    handle-error:
+        if: ${{ failure() }}
+        needs: [check-versions, php-lint, js-lint]
+        name: Handle failure
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        permissions: {}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          RELEASE_VERSION: ${{ needs.check-versions.outputs.release_version }}
+        steps:
+          - uses: act10ns/slack@d96404edccc6d6467fc7f8134a420c851b1e9054 # v2
+            with:
+                status: failure
+                message: "<{{{workflowUrl}}}|_{{workflow}}_> for ${{ github.repository }} *v${{ env.RELEASE_VERSION }}* failed."
+                channel: ${{ inputs.slack-channel }}

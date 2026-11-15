@@ -1,0 +1,46 @@
+name: Check @version tags
+description: Require `@version x.x.x` in the class, trait or interface DocBlock of every PHP file a plugin pull request changes, with the plugin's own bin/version_updated.sh.
+
+# Use it as the only step of the job that branch protection requires, so the check keeps its name:
+#
+#   on:
+#     pull_request:
+#       branches: [trunk]
+#   jobs:
+#     version-check:
+#       name: Validate @version Tag
+#       # Release bumps replace 'x.x.x' with the real version by design.
+#       if: ${{ !(github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.event.pull_request.head.ref, 'release/')) }}
+#       runs-on: ubuntu-latest
+#       steps:
+#         - uses: woocommerce/.github/actions/check-version@<commit SHA>
+
+runs:
+  using: composite
+  steps:
+    - name: Check out the pull request
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        # The comparison below needs the merge base with the target branch.
+        fetch-depth: 0
+
+    - name: Validate @version tags on changed PHP files
+      shell: bash
+      env:
+        BASE_REF: ${{ github.base_ref }}
+      run: |
+        if [[ -z "$BASE_REF" ]]; then
+          echo "::error::Run this action on a pull_request event."
+          exit 1
+        fi
+        # git runs on its own line so a failed comparison fails the check, and the
+        # file names stay in shell variables, never in workflow expression syntax.
+        FILES=$(git -c core.quotePath=false diff --name-only --diff-filter=ACM "origin/${BASE_REF}...HEAD" -- '*.php')
+        if [ -z "$FILES" ]; then
+          echo "✅ No PHP files changed. Skipping validation."
+          exit 0
+        fi
+        echo "🔹 Changed PHP files:"
+        echo "$FILES"
+        mapfile -t FILE_ARRAY <<< "$FILES"
+        bash bin/version_updated.sh "${FILE_ARRAY[@]}"

@@ -4,7 +4,7 @@ description: Download the production ZIP artifact of the current workflow run, v
 # Example, for a job with `actions: read`:
 #
 #   - id: candidate
-#     uses: woocommerce/.github/.github/actions/verify-candidate-zip@<commit SHA>
+#     uses: woocommerce/.github/actions/verify-candidate-zip@<commit SHA>
 #     with:
 #       artifact-id: ${{ needs.build.outputs.artifact-id }}
 #       source-sha: ${{ needs.build.outputs.source-sha }}

@@ -1,0 +1,131 @@
+name: Verify candidate ZIP
+description: Download the production ZIP artifact of the current workflow run, verify its source commit and SHA-256, and optionally unpack it and check the plugin layout. Linux runners only.
+
+# Example, for a job with `actions: read`:
+#
+#   - id: candidate
+#     uses: woocommerce/.github/.github/actions/verify-candidate-zip@<commit SHA>
+#     with:
+#       artifact-id: ${{ needs.build.outputs.artifact-id }}
+#       source-sha: ${{ needs.build.outputs.source-sha }}
+#       expected-source-sha: ${{ github.sha }}
+#       sha256: ${{ needs.build.outputs.sha256 }}
+#       zip-name: my-plugin.zip
+#       # Leave these three out to verify the ZIP without unpacking it.
+#       destination: release-build
+#       root: my-plugin
+#       main-file: my-plugin.php
+
+inputs:
+  artifact-id:
+    description: ID of the production ZIP artifact.
+    required: true
+  source-sha:
+    description: Source commit recorded by the build job.
+    required: true
+  expected-source-sha:
+    description: Source commit under test.
+    required: true
+  sha256:
+    description: SHA-256 of the ZIP inside the Actions artifact.
+    required: true
+  zip-name:
+    description: File name of the ZIP inside the artifact, for example my-plugin.zip.
+    required: true
+  destination:
+    description: A new directory in the workspace to unpack the ZIP into. Leave empty to verify the ZIP without unpacking it.
+    required: false
+    default: ''
+  root:
+    description: The ZIP's only top-level directory. Required with destination.
+    required: false
+    default: ''
+  main-file:
+    description: File name of the plugin main file inside the top-level directory. Required with destination.
+    required: false
+    default: ''
+
+outputs:
+  zip:
+    description: Absolute path of the verified ZIP.
+    value: ${{ steps.verify.outputs.zip }}
+  plugin-dir:
+    description: Absolute path of the unpacked plugin directory. Empty without destination.
+    value: ${{ steps.verify.outputs.plugin-dir }}
+
+runs:
+  using: composite
+  steps:
+    - name: Validate candidate identity
+      id: candidate
+      shell: bash
+      env:
+        ARTIFACT_ID: ${{ inputs.artifact-id }}
+        SOURCE_SHA: ${{ inputs.source-sha }}
+        EXPECTED_SOURCE_SHA: ${{ inputs.expected-source-sha }}
+        ZIP_SHA256: ${{ inputs.sha256 }}
+        ZIP_NAME: ${{ inputs.zip-name }}
+        DESTINATION: ${{ inputs.destination }}
+        ROOT: ${{ inputs.root }}
+        MAIN_FILE: ${{ inputs.main-file }}
+      run: |
+        name='^[a-zA-Z0-9][a-zA-Z0-9._-]*$'
+        if [[ ! "$ZIP_NAME" =~ $name || "$ZIP_NAME" != *.zip ]]; then
+          echo "::error::Provide the file name of the ZIP inside the artifact."
+          exit 1
+        fi
+        if [[ -n "$DESTINATION" && ( ! "$DESTINATION" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ || ! "$ROOT" =~ $name || ! "$MAIN_FILE" =~ $name ) ]]; then
+          echo "::error::Unpacking needs a single workspace directory name, the ZIP's top-level directory and the main file name."
+          exit 1
+        fi
+        if [[ ! "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ || ! "$ZIP_SHA256" =~ ^[a-f0-9]{64}$ ]]; then
+          echo "::error::The production candidate needs one artifact ID and a SHA-256 digest."
+          exit 1
+        fi
+        if [[ ! "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ || "$SOURCE_SHA" != "$EXPECTED_SOURCE_SHA" ]]; then
+          echo "::error::The production candidate does not match the requested source commit."
+          exit 1
+        fi
+        download=$(mktemp -d "${RUNNER_TEMP}/woo-candidate.XXXXXX")
+        printf 'download=%s\n' "$download" >> "$GITHUB_OUTPUT"
+
+    - name: Download the exact production candidate
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        artifact-ids: ${{ inputs.artifact-id }}
+        path: ${{ steps.candidate.outputs.download }}
+
+    - name: Verify the production ZIP
+      id: verify
+      shell: bash
+      env:
+        DOWNLOAD: ${{ steps.candidate.outputs.download }}
+        ARTIFACT_ID: ${{ inputs.artifact-id }}
+        SOURCE_SHA: ${{ inputs.source-sha }}
+        ZIP_SHA256: ${{ inputs.sha256 }}
+        ZIP_NAME: ${{ inputs.zip-name }}
+        DESTINATION: ${{ inputs.destination }}
+        ROOT: ${{ inputs.root }}
+        MAIN_FILE: ${{ inputs.main-file }}
+      run: |
+        zip_file="$DOWNLOAD/$ZIP_NAME"
+        printf '%s  %s\n' "$ZIP_SHA256" "$zip_file" | sha256sum --check -
+        printf 'zip=%s\n' "$zip_file" >> "$GITHUB_OUTPUT"
+
+        if [[ -n "$DESTINATION" ]]; then
+          cd "$GITHUB_WORKSPACE" || exit 1
+          mkdir -- "$DESTINATION"
+          unzip -q "$zip_file" -d "$DESTINATION"
+
+          shopt -s dotglob nullglob
+          entries=("$DESTINATION"/*)
+          plugin="$DESTINATION/$ROOT"
+          main_file="$plugin/$MAIN_FILE"
+          if [[ ${#entries[@]} != 1 || -L "$plugin" || -L "$main_file" || ! -f "$main_file" ]]; then
+            echo "::error::The production ZIP must contain the expected plugin directory and main file."
+            exit 1
+          fi
+          printf 'plugin-dir=%s\n' "$GITHUB_WORKSPACE/$plugin" >> "$GITHUB_OUTPUT"
+        fi
+        printf 'Verified artifact %s, source %s, SHA-256 %s.\n' \
+          "$ARTIFACT_ID" "$SOURCE_SHA" "$ZIP_SHA256" >> "$GITHUB_STEP_SUMMARY"

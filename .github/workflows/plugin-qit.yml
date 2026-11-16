@@ -108,7 +108,7 @@ env:
   WC_VERSION_ARG: ${{ inputs.wc-version == 'nightly' && 'rc' || ( inputs.wc-version && inputs.wc-version || 'stable' ) }}
   ADDITIONAL_PLUGINS: ${{ inputs.test-additional-plugins && format( '--additional_plugins={0}', inputs.test-additional-plugins ) || '' }}
   ACTIVATION_PLUGINS: ${{ inputs.plugins && format( '--plugin={0}', inputs.plugins ) || '' }}
-  WAIT_FLAG: ${{ inputs.wait && '--wait' || '' }}
+  ASYNC_FLAG: ${{ !inputs.wait && '--async' || '' }}
   EXTRA_OPTIONS: ${{ inputs.options }}
   # Signed report URLs stay out of public repositories' logs and artifacts.
   REPORT_URL_OPTION: ${{ github.event.repository.private && '--print-report-url' || '' }}
@@ -228,7 +228,7 @@ jobs:
               ./vendor/bin/qit run:security \
                 "$EXTENSION_SLUG" \
                 --zip="$SCAN_ZIP_FILE_PATH" \
-                $WAIT_FLAG \
+                $ASYNC_FLAG \
                 $REPORT_URL_OPTION \
                 $EXTRA_OPTIONS \
                 -n \
@@ -254,7 +254,7 @@ jobs:
               ./vendor/bin/qit run:phpcompatibility \
                 "$EXTENSION_SLUG" \
                 --zip="$SCAN_ZIP_FILE_PATH" \
-                $WAIT_FLAG \
+                $ASYNC_FLAG \
                 $REPORT_URL_OPTION \
                 $EXTRA_OPTIONS \
                 -n \
@@ -282,7 +282,7 @@ jobs:
                 --wordpress_version="$WP_VERSION_ARG" \
                 --woocommerce_version="$WC_VERSION_ARG" \
                 $ADDITIONAL_PLUGINS \
-                $WAIT_FLAG \
+                $ASYNC_FLAG \
                 $REPORT_URL_OPTION \
                 $EXTRA_OPTIONS \
                 -n \
@@ -308,7 +308,7 @@ jobs:
               ./vendor/bin/qit run:malware \
                 "$EXTENSION_SLUG" \
                 --zip="$ZIP_FILE_PATH" \
-                $WAIT_FLAG \
+                $ASYNC_FLAG \
                 $REPORT_URL_OPTION \
                 $EXTRA_OPTIONS \
                 -n \
@@ -333,7 +333,7 @@ jobs:
               ./vendor/bin/qit run:plugin-check \
                 "$EXTENSION_SLUG" \
                 --zip="$ZIP_FILE_PATH" \
-                $WAIT_FLAG \
+                $ASYNC_FLAG \
                 $REPORT_URL_OPTION \
                 $EXTRA_OPTIONS \
                 -n \
@@ -359,7 +359,7 @@ jobs:
                 "$EXTENSION_SLUG" \
                 --zip="$ZIP_FILE_PATH" \
                 --php_version="$PHP_VERSION" \
-                $WAIT_FLAG \
+                $ASYNC_FLAG \
                 $REPORT_URL_OPTION \
                 $EXTRA_OPTIONS \
                 -n \
@@ -388,7 +388,6 @@ jobs:
                 --woocommerce_version="$WC_VERSION_ARG" \
                 --php_version="$PHP_VERSION" \
                 $ADDITIONAL_PLUGINS \
-                $WAIT_FLAG \
                 $REPORT_URL_OPTION \
                 $EXTRA_OPTIONS \
                 -n \
@@ -417,7 +416,6 @@ jobs:
                 --woocommerce_version="$WC_VERSION_ARG" \
                 --php_version="$PHP_VERSION" \
                 $ADDITIONAL_PLUGINS \
-                $WAIT_FLAG \
                 $REPORT_URL_OPTION \
                 $EXTRA_OPTIONS \
                 -n \
@@ -443,7 +441,6 @@ jobs:
                 --woocommerce_version=stable \
                 --php_version="$PHP_VERSION" \
                 $ADDITIONAL_PLUGINS \
-                $WAIT_FLAG \
                 $REPORT_URL_OPTION \
                 $EXTRA_OPTIONS \
                 -n \
@@ -523,6 +520,12 @@ jobs:
 
               inputs = json.loads(os.environ['QIT_INPUTS'])
               steps = json.loads(os.environ['QIT_STEPS'])
+              async_managed = not inputs['wait']
+              # Extra options follow the generated flag in the managed commands.
+              for option in inputs['options'].split():
+                  if option in ('--async', '--no-async'):
+                      async_managed = option == '--async'
+              synchronous = {'activation', 'woo-api', 'woo-e2e', 'api-fuzz'}
               checks = {
                   'activation': 'run-activation-test',
                   'security': 'run-security-test',
@@ -553,7 +556,7 @@ jobs:
                               result = 'failed on stable WooCommerce (exit ' + (stable or 'none') + '); requested version not verified (no matching test package)'
                               failed = True
                       elif code == '0':
-                          result = 'passed'
+                          result = 'submitted' if async_managed and check not in synchronous else 'passed'
                       else:
                           result = 'failed (exit ' + code + ')'
                           failed = True

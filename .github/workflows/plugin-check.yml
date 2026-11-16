@@ -17,6 +17,10 @@ name: 'WordPress Plugin Checks'
 on:
   workflow_call:
     inputs:
+      # Optional normalized config.woo from github.sha, provided by the PR CI planner.
+      event-config:
+        type: string
+        default: ''
       artifact-id:
         type: string
         required: true
@@ -38,6 +42,7 @@ jobs:
   # config.woo.pluginCheck of the candidate's commit.
   config:
     name: Read plugin metadata
+    if: inputs.event-config == '' || inputs.source-sha != github.sha
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -51,8 +56,9 @@ jobs:
 
   test:
     needs: config
+    if: ${{ !cancelled() && !failure() }}
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ fromJSON(needs.config.outputs.json).pluginCheck.timeoutMinutes }}
+    timeout-minutes: ${{ fromJSON(needs.config.result == 'skipped' && inputs.event-config || needs.config.outputs.json).pluginCheck.timeoutMinutes }}
     steps:
       - name: Verify and unpack the production ZIP
         id: candidate
@@ -62,10 +68,10 @@ jobs:
           source-sha: ${{ inputs.source-sha }}
           expected-source-sha: ${{ inputs.expected-source-sha }}
           sha256: ${{ inputs.sha256 }}
-          zip-name: ${{ fromJSON(needs.config.outputs.json).slug }}.zip
+          zip-name: ${{ fromJSON(needs.config.result == 'skipped' && inputs.event-config || needs.config.outputs.json).slug }}.zip
           destination: release-build
-          root: ${{ fromJSON(needs.config.outputs.json).zip.root }}
-          main-file: ${{ fromJSON(needs.config.outputs.json).mainFile }}
+          root: ${{ fromJSON(needs.config.result == 'skipped' && inputs.event-config || needs.config.outputs.json).zip.root }}
+          main-file: ${{ fromJSON(needs.config.result == 'skipped' && inputs.event-config || needs.config.outputs.json).mainFile }}
 
       # Plugin Check falls back to the workspace root when build-dir is empty.
       - name: Require the unpacked candidate
@@ -78,11 +84,11 @@ jobs:
         with:
           build-dir: ${{ steps.candidate.outputs.plugin-dir }}
           repo-token: ''
-          exclude-checks: ${{ join(fromJSON(needs.config.outputs.json).pluginCheck.excludeChecks, fromJSON('"\n"')) }}
-          exclude-directories: ${{ join(fromJSON(needs.config.outputs.json).pluginCheck.excludeDirectories, fromJSON('"\n"')) }}
-          exclude-files: ${{ join(fromJSON(needs.config.outputs.json).pluginCheck.excludeFiles, fromJSON('"\n"')) }}
-          ignore-warnings: ${{ fromJSON(needs.config.outputs.json).pluginCheck.ignoreWarnings }}
-          strict: ${{ fromJSON(needs.config.outputs.json).pluginCheck.strict }}
+          exclude-checks: ${{ join(fromJSON(needs.config.result == 'skipped' && inputs.event-config || needs.config.outputs.json).pluginCheck.excludeChecks, fromJSON('"\n"')) }}
+          exclude-directories: ${{ join(fromJSON(needs.config.result == 'skipped' && inputs.event-config || needs.config.outputs.json).pluginCheck.excludeDirectories, fromJSON('"\n"')) }}
+          exclude-files: ${{ join(fromJSON(needs.config.result == 'skipped' && inputs.event-config || needs.config.outputs.json).pluginCheck.excludeFiles, fromJSON('"\n"')) }}
+          ignore-warnings: ${{ fromJSON(needs.config.result == 'skipped' && inputs.event-config || needs.config.outputs.json).pluginCheck.ignoreWarnings }}
+          strict: ${{ fromJSON(needs.config.result == 'skipped' && inputs.event-config || needs.config.outputs.json).pluginCheck.strict }}
           # Plugin Check has no baseline support: config.woo.pluginCheck.ignoreCodes lists legacy
           # codes with pre-existing hits that the repository's own PHPCS gate tracks.
-          ignore-codes: ${{ join(fromJSON(needs.config.outputs.json).pluginCheck.ignoreCodes, fromJSON('"\n"')) }}
+          ignore-codes: ${{ join(fromJSON(needs.config.result == 'skipped' && inputs.event-config || needs.config.outputs.json).pluginCheck.ignoreCodes, fromJSON('"\n"')) }}

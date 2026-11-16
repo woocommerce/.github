@@ -72,35 +72,33 @@ jobs:
             predicate-quantifier: 'every'
             filters: .github/product-filter.yml
 
-    # The plugin's capabilities and settings: package.json config.woo with defaults.
+    # Read config.woo from the merge commit and overrides from the PR head subject.
     config:
-      name: Read plugin metadata
+      name: Read PR metadata
       runs-on: ubuntu-latest
       timeout-minutes: 5
       outputs:
         json: ${{ steps.config.outputs.json }}
+        WC_VERSION: ${{ steps.extract-commit-values.outputs.WC_VERSION }}
+        WP_VERSION: ${{ steps.extract-commit-values.outputs.WP_VERSION }}
+        PHP_VERSION: ${{ steps.extract-commit-values.outputs.PHP_VERSION }}
       steps:
         - name: Read config.woo
           id: config
           uses: $/actions/read-plugin-config
 
-    extract-values:
-      name: Parse Commit Message
-      runs-on: ubuntu-latest
-      timeout-minutes: 5
-      outputs:
-        WC_VERSION: ${{ steps.extract-commit-values.outputs.WC_VERSION }}
-        WP_VERSION: ${{ steps.extract-commit-values.outputs.WP_VERSION }}
-        PHP_VERSION: ${{ steps.extract-commit-values.outputs.PHP_VERSION }}
-      steps:
-        - name: Checkout code
+        - name: Checkout the PR head parser
           uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
           with:
             ref: ${{ github.event.pull_request.head.sha }}
             persist-credentials: false
+            path: pr-head
+            sparse-checkout: bin/parse-commit-message-args.js
+            sparse-checkout-cone-mode: false
         # Empty values keep each suite's default versions.
         - name: Extract values from commit message
           id: extract-commit-values
+          working-directory: pr-head
           run: |
             commit_message=$(git show -s --format=%s)
             echo "$commit_message"
@@ -122,9 +120,11 @@ jobs:
 
     php-lint:
       name: PHP
-      needs: changes
+      needs: [changes, config]
       if: ${{ needs.changes.outputs.php == 'true' }}
       uses: ./.github/workflows/plugin-php-lint.yml
+      with:
+        event-config: ${{ needs.config.outputs.json }}
 
     phpstan:
       name: PHPStan
@@ -171,6 +171,7 @@ jobs:
         actions: read
       uses: ./.github/workflows/plugin-check.yml
       with:
+        event-config: ${{ needs.config.outputs.json }}
         artifact-id: ${{ needs.build_project.outputs.artifact-id }}
         source-sha: ${{ needs.build_project.outputs.source-sha }}
         expected-source-sha: ${{ github.sha }}
@@ -178,27 +179,27 @@ jobs:
 
     php-tests:
       name: PHP
-      needs: [changes, config, extract-values]
+      needs: [changes, config]
       if: ${{ github.event.pull_request.draft == false && needs.changes.outputs.php == 'true' && fromJSON(needs.config.outputs.json).capabilities.phpunit }}
       uses: ./.github/workflows/plugin-phpunit.yml
       with:
-        wc-version: ${{ needs.extract-values.outputs.WC_VERSION }}
-        wp-version: ${{ needs.extract-values.outputs.WP_VERSION }}
-        php-version: ${{ needs.extract-values.outputs.PHP_VERSION }}
+        wc-version: ${{ needs.config.outputs.WC_VERSION }}
+        wp-version: ${{ needs.config.outputs.WP_VERSION }}
+        php-version: ${{ needs.config.outputs.PHP_VERSION }}
 
     # config.woo.pullRequests.privatePlugins: the suite needs private plugins in every run, so
     # same-repository pull requests download them (Dependabot needs ORG_DOWNLOADS as a Dependabot
     # secret) and fork pull requests, which never receive secrets, skip it with a warning below.
     integration-tests:
       name: PHP integration
-      needs: [changes, config, extract-values]
+      needs: [changes, config]
       if: ${{ github.event.pull_request.draft == false && needs.changes.outputs.php == 'true' && fromJSON(needs.config.outputs.json).capabilities.integration && fromJSON(needs.config.outputs.json).pullRequests.privatePlugins && github.event.pull_request.head.repo.full_name == github.repository }}
       uses: ./.github/workflows/plugin-phpunit.yml
       with:
         suite: integration
-        wc-version: ${{ needs.extract-values.outputs.WC_VERSION }}
-        wp-version: ${{ needs.extract-values.outputs.WP_VERSION }}
-        php-version: ${{ needs.extract-values.outputs.PHP_VERSION }}
+        wc-version: ${{ needs.config.outputs.WC_VERSION }}
+        wp-version: ${{ needs.config.outputs.WP_VERSION }}
+        php-version: ${{ needs.config.outputs.PHP_VERSION }}
         trusted-plugins: true
       secrets:
         ORG_DOWNLOADS: ${{ secrets.ORG_DOWNLOADS }}
@@ -212,19 +213,20 @@ jobs:
     # Like integration-tests above for config.woo.pullRequests.privatePlugins.
     e2e-tests:
       name: E2E tests
-      needs: [changes, config, extract-values, build_project]
+      needs: [changes, config, build_project]
       if: ${{ github.event.pull_request.draft == false && needs.changes.outputs.product == 'true' && fromJSON(needs.config.outputs.json).capabilities.e2e && (!fromJSON(needs.config.outputs.json).pullRequests.privatePlugins || github.event.pull_request.head.repo.full_name == github.repository) }}
       permissions:
         contents: read
         actions: read
       uses: ./.github/workflows/plugin-e2e.yml
       with:
+        event-config: ${{ needs.config.outputs.json }}
         artifact-id: ${{ needs.build_project.outputs.artifact-id }}
         source-sha: ${{ needs.build_project.outputs.source-sha }}
         sha256: ${{ needs.build_project.outputs.sha256 }}
-        wc-version: ${{ needs.extract-values.outputs.WC_VERSION }}
-        wp-version: ${{ needs.extract-values.outputs.WP_VERSION }}
-        php-version: ${{ needs.extract-values.outputs.PHP_VERSION }}
+        wc-version: ${{ needs.config.outputs.WC_VERSION }}
+        wp-version: ${{ needs.config.outputs.WP_VERSION }}
+        php-version: ${{ needs.config.outputs.PHP_VERSION }}
         trusted-plugins: ${{ fromJSON(needs.config.outputs.json).pullRequests.privatePlugins }}
       secrets:
         ORG_DOWNLOADS: ${{ secrets.ORG_DOWNLOADS }}
@@ -236,7 +238,7 @@ jobs:
     results:
       name: Check results
       if: ${{ always() }}
-      needs: [changes, config, extract-values, spelling, php-lint, phpstan, js-lint, actionlint, plugin-check, php-tests, integration-tests, build_project, e2e-tests]
+      needs: [changes, config, spelling, php-lint, phpstan, js-lint, actionlint, plugin-check, php-tests, integration-tests, build_project, e2e-tests]
       runs-on: ubuntu-latest
       timeout-minutes: 5
       permissions: {}
@@ -247,7 +249,6 @@ jobs:
           {
             "changes": true,
             "config": true,
-            "extract-values": true,
             "spelling": true,
             "php-lint": ${{ needs.changes.outputs.php == 'true' }},
             "phpstan": ${{ needs.changes.outputs.php == 'true' }},

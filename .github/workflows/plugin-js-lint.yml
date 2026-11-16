@@ -77,9 +77,12 @@ jobs:
           name: eslint_report.json
           path: eslint_report.json
 
-      # Fork and Dependabot tokens cannot create check runs.
+      # Fork and Dependabot tokens cannot create check runs. `check:js` above is the gate; this step
+      # only annotates, and it sometimes fails to update its own check run ("Not Found"), which
+      # must not fail the job or skip the JavaScript unit tests below.
       - name: Annotate code linting results
         if: ${{ !cancelled() && inputs.frontend && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) }}
+        continue-on-error: true
         uses: ataylorme/eslint-annotate-action@5a8d8ab89a57679e90c32750e0f382e9d8570750 # 4.0.0
         with:
           GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN }}'

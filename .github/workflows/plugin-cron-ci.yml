@@ -105,8 +105,11 @@ jobs:
         with:
           qit-derivative: ${{ fromJSON(needs.config.outputs.json).capabilities.qit }}
 
+    # The jobs below need the package, which runs after PHPUnit and the integration suite with
+    # `!failure() && !cancelled()`. A plain `if:` also checks every job further up, so a skipped
+    # integration suite or JavaScript lint would skip them; these keep the same guard.
     plugin-check:
-        if: ${{ fromJSON(needs.config.outputs.json).capabilities.pluginCheck }}
+        if: ${{ !failure() && !cancelled() && fromJSON(needs.config.outputs.json).capabilities.pluginCheck }}
         name: Plugin Check
         needs: [config, build_project]
         permissions:
@@ -120,7 +123,7 @@ jobs:
           sha256: ${{ needs.build_project.outputs.sha256 }}
 
     e2e-tests:
-        if: ${{ fromJSON(needs.config.outputs.json).capabilities.e2e }}
+        if: ${{ !failure() && !cancelled() && fromJSON(needs.config.outputs.json).capabilities.e2e }}
         name: E2E tests
         needs: [config, build_project]
         permissions:
@@ -136,7 +139,7 @@ jobs:
           ORG_DOWNLOADS: ${{ secrets.ORG_DOWNLOADS }}
 
     qit-tests:
-        if: ${{ fromJSON(needs.config.outputs.json).capabilities.qit }}
+        if: ${{ !failure() && !cancelled() && fromJSON(needs.config.outputs.json).capabilities.qit }}
         name: QIT tests
         needs: [config, build_project]
         uses: ./.github/workflows/plugin-qit.yml

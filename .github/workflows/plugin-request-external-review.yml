@@ -2,7 +2,7 @@ name: Request team review for external PRs
 
 # Requests a review from the maintaining team when someone outside it opens a pull request, or marks
 # it ready. It never checks out or runs code from the pull request. The caller keeps the
-# pull_request_target trigger and grants pull-requests: write.
+# pull_request_target trigger. API calls authenticate with REVIEW_TOKEN.
 #
 #   request-review:
 #     uses: woocommerce/.github/.github/workflows/plugin-request-external-review.yml@<commit SHA>
@@ -23,8 +23,7 @@ on:
       REVIEW_TOKEN:
         required: true
 
-permissions:
-  pull-requests: write
+permissions: {}
 
 jobs:
   request-review:

@@ -80,6 +80,7 @@ jobs:
                   --jq '.[] | select(.head.repo.full_name == .base.repo.full_name and (.head.ref | startswith("release/"))) | .number')
                 if [[ -n "$OPEN_RELEASE_PRS" ]]; then
                   echo "::error::Finish or close the existing release PR before cutting another release."
+                  echo "If Start Release failed after opening the PR, see the summary of that failed attempt for recovery steps."
                   exit 1
                 fi
 
@@ -87,6 +88,7 @@ jobs:
                   ls-remote --heads origin "refs/heads/release/${VERSION}")
                 if [[ -n "$RELEASE_REF" ]]; then
                   echo "::error::Branch release/${VERSION} already exists."
+                  echo "If Start Release failed after pushing the branch, see the summary of that failed attempt for recovery steps."
                   exit 1
                 fi
 
@@ -172,6 +174,45 @@ jobs:
                 git add -u
                 git commit -m "Bump version to ${VERSION}"
 
+            - name: Prepare the changelog comparison and recovery instructions
+              env:
+                GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+                MILESTONE_NUMBER: ${{ steps.milestone.outputs.number }}
+                MILESTONE_URL: ${{ steps.milestone.outputs.url }}
+              run: |
+                RELEASE_COMMIT=$(git rev-parse HEAD)
+                CHANGELOG=$(git show HEAD:changelog.txt | awk -v heading="= ${VERSION} - " 'index($0, heading) == 1 && !found {found=1; next} found && /^= /{done=1} found && !done')
+                ISSUES=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues?milestone=${MILESTONE_NUMBER}&state=all&per_page=100" --jq '.[] | "- #\(.number) \(.title)"' || echo "(could not fetch milestone issues)")
+
+                cat > "$RUNNER_TEMP/release-comparison.md" <<EOF
+                ### Changelog entries for ${VERSION}
+
+                \`\`\`
+                ${CHANGELOG}
+                \`\`\`
+
+                ### Milestone issues
+
+                ${ISSUES}
+
+                Every milestone issue should have a matching changelog entry. Compare before approving.
+                EOF
+
+                # Save this before the push so the operator has it even if a later write fails.
+                {
+                  cat <<EOF
+                ### If a later step fails
+
+                Prepared \`release/${VERSION}\` at \`${RELEASE_COMMIT}\` for [milestone ${VERSION}](${MILESTONE_URL}).
+
+                1. Check the branch and any open release PR in \`${GITHUB_REPOSITORY}\`. If another release PR is open or the branch or PR head differs from the prepared commit, check with the release owner before continuing.
+                2. If the branch and release PR are both missing, rerun Start Release. If the branch exists without a PR, open \`Release ${VERSION}\` from \`release/${VERSION}\` into \`trunk\` in the same repository. Use \`Milestone: ${MILESTONE_URL}\` as the PR body. Reuse an existing PR if it has that head and base.
+                3. If the changelog comparison is missing from the PR, post the comparison below as a comment. Paste the changelog entries into a fenced code block and check the milestone for issues added since the failed attempt.
+
+                EOF
+                  cat "$RUNNER_TEMP/release-comparison.md"
+                } >> "$GITHUB_STEP_SUMMARY"
+
             - name: Push release branch
               env:
                 GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
@@ -197,24 +238,9 @@ jobs:
             - name: Post changelog vs milestone comparison
               env:
                 GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+                PR_URL: ${{ steps.pr.outputs.url }}
               run: |
-                CHANGELOG=$(awk -v heading="= ${VERSION} - " 'index($0, heading) == 1 {found=1; next} found && /^= /{exit} found' changelog.txt)
-                ISSUES=$(gh api --paginate "repos/${{ github.repository }}/issues?milestone=${{ steps.milestone.outputs.number }}&state=all&per_page=100" --jq '.[] | "- #\(.number) \(.title)"' || echo "(could not fetch milestone issues)")
-
-                gh pr comment "${{ steps.pr.outputs.url }}" --body "$(cat <<EOF
-                ### Changelog entries for ${VERSION}
-
-                \`\`\`
-                ${CHANGELOG}
-                \`\`\`
-
-                ### Milestone issues
-
-                ${ISSUES}
-
-                Every milestone issue should have a matching changelog entry. Compare before approving.
-                EOF
-                )"
+                gh pr comment "$PR_URL" --body-file "$RUNNER_TEMP/release-comparison.md"
 
             - name: Summary
               run: |

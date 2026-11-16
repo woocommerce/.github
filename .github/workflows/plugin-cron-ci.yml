@@ -10,8 +10,6 @@ name: Cron CI
 #     permissions:
 #       contents: read
 #       actions: read
-#       checks: write
-#       pull-requests: read
 #       vulnerability-alerts: read
 #     uses: woocommerce/.github/.github/workflows/plugin-cron-ci.yml@<commit SHA>
 #     secrets:
@@ -63,10 +61,6 @@ jobs:
 
     js-lint:
         if: ${{ fromJSON(needs.config.outputs.json).capabilities.js }}
-        permissions:
-          contents: read
-          checks: write
-          pull-requests: read
         name: JS Linting
         needs: config
         uses: ./.github/workflows/plugin-js-lint.yml

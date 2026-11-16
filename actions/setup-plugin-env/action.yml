@@ -18,7 +18,7 @@ inputs:
     required: false
     default: 'false'
   node-cache:
-    description: Restore and save the pnpm store. Needs pnpm-lock.yaml. Leave off for untrusted or release refs.
+    description: Cache the pnpm store using pnpm-lock.yaml. Pull requests restore only. Leave off for release refs.
     required: false
     default: 'false'
   php-version:
@@ -42,7 +42,7 @@ inputs:
     required: false
     default: ''
   composer-cache:
-    description: Restore and save Composer's download cache, keyed by every composer.lock. Leave off for untrusted or release refs.
+    description: Cache Composer downloads using every composer.lock. Pull requests restore only. Leave off for release refs.
     required: false
     default: 'false'
 
@@ -58,8 +58,27 @@ runs:
       uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
       with:
         node-version-file: .nvmrc
-        cache: ${{ inputs.node-cache == 'true' && 'pnpm' || '' }}
-        package-manager-cache: ${{ inputs.node-cache == 'true' }}
+        cache: ${{ inputs.node-cache == 'true' && github.event_name != 'pull_request' && 'pnpm' || '' }}
+        package-manager-cache: ${{ inputs.node-cache == 'true' && github.event_name != 'pull_request' }}
+
+    - name: Read pnpm cache inputs
+      if: inputs.node == 'true' && inputs.node-cache == 'true' && github.event_name == 'pull_request'
+      id: pnpm-cache
+      shell: bash
+      run: |
+        test -f pnpm-lock.yaml
+        store=$(pnpm store path --silent)
+        test -n "$store"
+        echo "store=$store" >> "$GITHUB_OUTPUT"
+        echo "arch=$(node -p 'process.arch')" >> "$GITHUB_OUTPUT"
+
+    # Match the pinned setup-node writer's pnpm key and store path on trunk.
+    - name: Restore the pnpm store
+      if: inputs.node == 'true' && inputs.node-cache == 'true' && github.event_name == 'pull_request'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.pnpm-cache.outputs.store }}
+        key: node-cache-${{ runner.os }}-${{ steps.pnpm-cache.outputs.arch }}-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
 
     - name: Set up PHP
       if: inputs.php-version != ''
@@ -78,8 +97,16 @@ runs:
       run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
 
     - name: Cache Composer downloads
-      if: inputs.composer-cache == 'true'
+      if: inputs.composer-cache == 'true' && github.event_name != 'pull_request'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.composer-cache.outputs.dir }}
+        key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
+        restore-keys: ${{ runner.os }}-composer-
+
+    - name: Restore Composer downloads
+      if: inputs.composer-cache == 'true' && github.event_name == 'pull_request'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ steps.composer-cache.outputs.dir }}
         key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}

@@ -223,6 +223,13 @@ jobs:
         if: matrix.provision == 'install'
         run: bash ./bin/install.sh wordpress_test root root 127.0.0.1 "$WP_VERSION" "$WC_VERSION"
 
+      # setup-node saves the pnpm store after the job, and that save fails when no step created the
+      # store, so a hook leg that needs no Node packages would fail on a cache miss. The hook's own
+      # `pnpm install` then finds everything in place.
+      - name: Install Node dependencies
+        if: matrix.provision == 'hook' && fromJSON(needs.config.outputs.json).capabilities.js
+        run: pnpm install --frozen-lockfile
+
       # Suites that run elsewhere (for example in wp-env) provision their own site.
       - name: Provision the test site
         if: matrix.provision == 'hook'

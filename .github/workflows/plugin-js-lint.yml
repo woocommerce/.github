@@ -1,14 +1,9 @@
 name: Linting
 
-# The plugin's JavaScript gate (`pnpm run check:js`), the Markdown check, ESLint annotations and,
-# with config.woo.capabilities.jsTests, the JavaScript unit tests. The caller grants
-# `checks: write` for the annotations.
+# The plugin's JavaScript gate (`pnpm run check:js`), the Markdown check and, with
+# config.woo.capabilities.jsTests, the JavaScript unit tests.
 #
 #   js-lint:
-#     permissions:
-#       contents: read
-#       checks: write
-#       pull-requests: read
 #     uses: woocommerce/.github/.github/workflows/plugin-js-lint.yml@<commit SHA>
 
 on:
@@ -36,8 +31,6 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
-      checks: write
-      pull-requests: read
 
     steps:
 
@@ -57,6 +50,8 @@ jobs:
         run: pnpm install --frozen-lockfile --ignore-scripts
 
       # The repository's JavaScript gate: licenses, package metadata, styles, scripts and types.
+      # ESLint runs once, here: setup-node's ESLint problem matcher turns its output into
+      # annotations, on fork pull requests too.
       - name: Run JavaScript checks
         if: ${{ inputs.frontend }}
         run: pnpm run check:js
@@ -64,29 +59,6 @@ jobs:
       - name: Lint Markdown documentation
         if: ${{ inputs.docs }}
         run: pnpm run lint:md:docs
-
-      - name: Save code linting report JSON
-        if: ${{ !cancelled() && inputs.frontend }}
-        run: pnpm run lint:js:report
-        continue-on-error: true
-
-      - name: Upload ESLint report
-        if: ${{ !cancelled() && inputs.frontend }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: eslint_report.json
-          path: eslint_report.json
-
-      # Fork and Dependabot tokens cannot create check runs. `check:js` above is the gate; this step
-      # only annotates, and it sometimes fails to update its own check run ("Not Found"), which
-      # must not fail the job or skip the JavaScript unit tests below.
-      - name: Annotate code linting results
-        if: ${{ !cancelled() && inputs.frontend && (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')) }}
-        continue-on-error: true
-        uses: ataylorme/eslint-annotate-action@5a8d8ab89a57679e90c32750e0f382e9d8570750 # 4.0.0
-        with:
-          GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN }}'
-          report-json: 'eslint_report.json'
 
       - name: Read plugin metadata
         id: config

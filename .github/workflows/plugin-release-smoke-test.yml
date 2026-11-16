@@ -6,10 +6,6 @@ name: Release smoke test
 #
 #   smoke:
 #     name: Smoke test
-#     permissions:
-#       contents: read
-#       checks: write
-#       pull-requests: read
 #     uses: woocommerce/.github/.github/workflows/plugin-release-smoke-test.yml@<commit SHA>
 #     with:
 #       slack-channel: '#team-releases'
@@ -69,10 +65,6 @@ jobs:
 
     js-lint:
         if: ${{ fromJSON(needs.check-versions.outputs.config).capabilities.js }}
-        permissions:
-          contents: read
-          checks: write
-          pull-requests: read
         name: JS Linting
         needs: check-versions
         uses: ./.github/workflows/plugin-js-lint.yml

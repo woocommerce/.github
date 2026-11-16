@@ -13,7 +13,6 @@ name: Pull request CI
 #     permissions:
 #       contents: read
 #       actions: read
-#       checks: write
 #       pull-requests: read
 #     uses: woocommerce/.github/.github/workflows/plugin-pr-ci.yml@<commit SHA>
 #     secrets:
@@ -139,10 +138,6 @@ jobs:
       name: JS Linting
       needs: [changes, config]
       if: ${{ fromJSON(needs.config.outputs.json).capabilities.js && (needs.changes.outputs.frontend == 'true' || needs.changes.outputs.docs == 'true') }}
-      permissions:
-        contents: read
-        checks: write
-        pull-requests: read
       uses: ./.github/workflows/plugin-js-lint.yml
       with:
         frontend: ${{ needs.changes.outputs.frontend == 'true' }}

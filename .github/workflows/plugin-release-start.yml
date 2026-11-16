@@ -44,7 +44,6 @@ jobs:
         runs-on: ubuntu-latest
         timeout-minutes: 5
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
           VERSION: ${{ inputs.version }}
           WP_VERSION: ${{ inputs.wp_version }}
           WC_VERSION: ${{ inputs.wc_version }}
@@ -55,7 +54,7 @@ jobs:
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
                 ref: trunk
-                token: ${{ secrets.RELEASE_TOKEN }}
+                persist-credentials: false
 
             - name: Validate inputs
               run: |
@@ -73,6 +72,9 @@ jobs:
                 fi
 
             - name: Pre-flight checks
+              env:
+                GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+                GIT_TERMINAL_PROMPT: 0
               run: |
                 OPEN_RELEASE_PRS=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls?state=open&base=trunk&per_page=100" \
                   --jq '.[] | select(.head.repo.full_name == .base.repo.full_name and (.head.ref | startswith("release/"))) | .number')
@@ -81,7 +83,9 @@ jobs:
                   exit 1
                 fi
 
-                if git ls-remote --exit-code --heads origin "release/${VERSION}" > /dev/null 2>&1; then
+                RELEASE_REF=$(git -c credential.helper= -c 'credential.helper=!gh auth git-credential' \
+                  ls-remote --heads origin "refs/heads/release/${VERSION}")
+                if [[ -n "$RELEASE_REF" ]]; then
                   echo "::error::Branch release/${VERSION} already exists."
                   exit 1
                 fi
@@ -96,6 +100,8 @@ jobs:
 
             - name: Find GitHub milestone
               id: milestone
+              env:
+                GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
               run: |
                 MILESTONE_NUMBER=$(gh api --paginate "repos/${{ github.repository }}/milestones?state=open&per_page=100" --jq ".[] | select(.title == \"${VERSION}\") | .number")
                 if [[ -z "$MILESTONE_NUMBER" ]]; then
@@ -148,6 +154,8 @@ jobs:
               run: bash bin/sync_readme_changelog.sh "$VERSION"
 
             - name: Open the next release milestone
+              env:
+                GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
               run: |
                 NEXT_VERSION=$(awk -F. '{print $1"."$2"."($3+1)}' <<< "$VERSION")
                 OPEN_MILESTONES=$(gh api --paginate "repos/$GITHUB_REPOSITORY/milestones?state=open&per_page=100" --jq '.[].title')
@@ -156,17 +164,26 @@ jobs:
                 fi
                 echo "Use milestone \`$NEXT_VERSION\` for changes merged after the branch cut." >> "$GITHUB_STEP_SUMMARY"
 
-            - name: Commit and push release branch
+            - name: Commit release branch
               run: |
                 git config user.name "github-actions[bot]"
                 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
                 git checkout -b "release/${VERSION}"
                 git add -u
                 git commit -m "Bump version to ${VERSION}"
-                git push origin "release/${VERSION}"
+
+            - name: Push release branch
+              env:
+                GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+                GIT_TERMINAL_PROMPT: 0
+              run: |
+                git -c credential.helper= -c 'credential.helper=!gh auth git-credential' \
+                  push origin "release/${VERSION}"
 
             - name: Create release PR
               id: pr
+              env:
+                GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
               run: |
                 PR_URL=$(gh pr create \
                   --repo "${{ github.repository }}" \
@@ -178,6 +195,8 @@ jobs:
                 echo "Release PR: $PR_URL"
 
             - name: Post changelog vs milestone comparison
+              env:
+                GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
               run: |
                 CHANGELOG=$(awk -v heading="= ${VERSION} - " 'index($0, heading) == 1 {found=1; next} found && /^= /{exit} found' changelog.txt)
                 ISSUES=$(gh api --paginate "repos/${{ github.repository }}/issues?milestone=${{ steps.milestone.outputs.number }}&state=all&per_page=100" --jq '.[] | "- #\(.number) \(.title)"' || echo "(could not fetch milestone issues)")

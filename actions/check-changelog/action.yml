@@ -89,6 +89,7 @@ runs:
       with:
         # The check diffs against the merge base with the target branch.
         fetch-depth: 0
+        persist-credentials: false
 
     - name: Set up PHP
       if: steps.decide.outputs.mode != 'skip'

@@ -49,6 +49,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
+    outputs:
+      review-comment: ${{ steps.comment.outputs.matches }}
     steps:
       - name: Reject callers outside allowed orgs
         run: |
@@ -59,6 +61,18 @@ jobs:
         env:
           CALLER_OWNER: ${{ github.repository_owner }}
           CALLER_REPO: ${{ github.repository }}
+
+      # Validate comment commands before the review job enters its concurrency group.
+      - name: Validate review command
+        if: github.event_name == 'issue_comment'
+        id: comment
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          CLEAN_BODY=${COMMENT_BODY//$'\r'/}
+          if grep -qiE '^[[:space:]]*@claude[[:space:]]+/?review[.!?]?[[:space:]]*$' <<< "$CLEAN_BODY"; then
+            echo 'matches=true' >> "$GITHUB_OUTPUT"
+          fi
 
   ai-review:
     needs: guard
@@ -72,7 +86,8 @@ jobs:
          github.event.pull_request.head.repo.full_name == github.repository) ||
         (github.event_name == 'issue_comment' &&
          github.event.issue.pull_request != null &&
-         github.event.issue.state == 'open')
+         github.event.issue.state == 'open' &&
+         needs.guard.outputs.review-comment == 'true')
       )
     concurrency:
       # Per-event namespace so a comment trigger does not cancel an in-flight first review.
@@ -97,37 +112,8 @@ jobs:
       HAS_SLACK_WEBHOOK: ${{ secrets.AI_REVIEW_SLACK_WEBHOOK_URL != '' }}
 
     steps:
-      # Gate issue_comment runs to PR comments matching the bot trigger.
-      # COMMENT_BODY is event metadata, safe to grep here.
-      - name: Validate trigger
-        id: trigger
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          IS_PR_COMMENT: ${{ github.event.issue.pull_request != null }}
-          COMMENT_BODY: ${{ github.event.comment.body }}
-        run: |
-          set -euo pipefail
-          if [ "$EVENT_NAME" = "issue_comment" ]; then
-            if [ "$IS_PR_COMMENT" != "true" ]; then
-              echo "Comment is on an issue, not a PR; skipping."
-              echo "skip=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            # Accept `@claude review` / `@claude /review`, optionally with one trailing
-            # sentence-ending punct (`.`, `!`, `?`). Reject anything else after the
-            # trigger so a body like `@claude /review;rm -rf` does not match.
-            CLEAN_BODY=${COMMENT_BODY//$'\r'/}
-            if ! printf '%s\n' "$CLEAN_BODY" | grep -qiE '^[[:space:]]*@claude[[:space:]]+/?review[.!?]?[[:space:]]*$'; then
-              echo "Comment did not match @claude review or @claude /review trigger; skipping."
-              echo "skip=true" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          fi
-          echo "skip=false" >> "$GITHUB_OUTPUT"
-
       # Fork reject. issue_comment payloads lack head.repo, so look it up.
       - name: Reject fork PRs
-        if: steps.trigger.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
@@ -153,7 +139,6 @@ jobs:
       # https://docs.github.com/en/rest/collaborators/collaborators#get-repository-permissions-for-a-user
       - name: Check write access
         id: check-team
-        if: steps.trigger.outputs.skip != 'true'
         run: |
           set -euo pipefail
           : "${PR_AUTHOR:?PR_AUTHOR is empty; refusing to query collaborators with empty login}"

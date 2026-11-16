@@ -10,6 +10,10 @@ name: PHP Coding Standards
 on:
   workflow_call:
     inputs:
+      # Optional normalized config.woo from github.sha, provided by the PR CI planner.
+      event-config:
+        type: string
+        default: ''
       checkout-ref:
         type: string
 
@@ -20,6 +24,7 @@ jobs:
 
   config:
     name: Read plugin metadata
+    if: inputs.event-config == '' || inputs.checkout-ref != ''
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -35,13 +40,14 @@ jobs:
   php-coding-standards:
     name: Coding standards (PHP ${{ matrix.php }})
     needs: config
+    if: ${{ !cancelled() && !failure() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
     strategy:
       fail-fast: false
       matrix:
-        php: ${{ fromJSON(needs.config.outputs.json).phpLint.php }}
+        php: ${{ fromJSON(needs.config.result == 'skipped' && inputs.event-config || needs.config.outputs.json).phpLint.php }}
 
     steps:
 
@@ -87,14 +93,14 @@ jobs:
   php-isolated-tests:
     name: Isolated tests (PHP ${{ matrix.php }})
     needs: config
-    if: fromJSON(needs.config.outputs.json).capabilities.isolated
+    if: ${{ !cancelled() && !failure() && fromJSON(needs.config.result == 'skipped' && inputs.event-config || needs.config.outputs.json).capabilities.isolated }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
     strategy:
       fail-fast: false
       matrix:
-        php: ${{ fromJSON(needs.config.outputs.json).phpLint.isolatedPhp }}
+        php: ${{ fromJSON(needs.config.result == 'skipped' && inputs.event-config || needs.config.outputs.json).phpLint.isolatedPhp }}
 
     steps:
 

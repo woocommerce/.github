@@ -22,6 +22,10 @@ on:
       ORG_DOWNLOADS:
         required: false
     inputs:
+      # Optional normalized config.woo from github.sha, provided by the PR CI planner.
+      event-config:
+        type: string
+        default: ''
       checkout-ref:
         type: string
       artifact-id:
@@ -56,6 +60,7 @@ permissions:
 jobs:
   config:
     name: Read plugin metadata
+    if: inputs.event-config == '' || inputs.checkout-ref != ''
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -70,20 +75,21 @@ jobs:
   e2e-tests:
     name: Acceptance${{ matrix.test_mode != '' && format(' ({0})', matrix.test_mode) || '' }}
     needs: config
+    if: ${{ !cancelled() && !failure() }}
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ fromJSON(needs.config.outputs.json).e2e.timeoutMinutes }}
+    timeout-minutes: ${{ fromJSON(needs.config.result == 'skipped' && inputs.event-config || needs.config.outputs.json).e2e.timeoutMinutes }}
 
     strategy:
       fail-fast: false
       matrix:
         # config.woo.e2e.projects: Playwright projects, one job each ("" runs every project in one job).
-        test_mode: ${{ fromJSON(needs.config.outputs.json).e2e.projects }}
+        test_mode: ${{ fromJSON(needs.config.result == 'skipped' && inputs.event-config || needs.config.outputs.json).e2e.projects }}
 
     env:
       WP_VERSION: ${{ inputs.wp-version }}
       WC_VERSION: ${{ inputs.wc-version }}
       PHP_VERSION: ${{ inputs.php-version }}
-      RUN_INTEGRATION_TESTS: ${{ (inputs.trusted-plugins || !fromJSON(needs.config.outputs.json).e2e.privatePlugins) && '1' || '0' }}
+      RUN_INTEGRATION_TESTS: ${{ (inputs.trusted-plugins || !fromJSON(needs.config.result == 'skipped' && inputs.event-config || needs.config.outputs.json).e2e.privatePlugins) && '1' || '0' }}
       TEST_MODE: ${{ matrix.test_mode }}
 
     steps:
@@ -112,7 +118,7 @@ jobs:
           source-sha: ${{ inputs.source-sha }}
           expected-source-sha: ${{ steps.head.outputs.sha }}
           sha256: ${{ inputs.sha256 }}
-          zip-name: ${{ fromJSON(needs.config.outputs.json).slug }}.zip
+          zip-name: ${{ fromJSON(needs.config.result == 'skipped' && inputs.event-config || needs.config.outputs.json).slug }}.zip
 
       - name: Install Node dependencies
         run: pnpm install --frozen-lockfile
@@ -120,7 +126,7 @@ jobs:
       # Keep ORG_DOWNLOADS out of the dependency install step: install scripts must not see it.
       - name: Setup Environment
         env:
-          ORG_DOWNLOADS: ${{ env.RUN_INTEGRATION_TESTS == '1' && fromJSON(needs.config.outputs.json).e2e.privatePlugins && secrets.ORG_DOWNLOADS || '' }}
+          ORG_DOWNLOADS: ${{ env.RUN_INTEGRATION_TESTS == '1' && fromJSON(needs.config.result == 'skipped' && inputs.event-config || needs.config.outputs.json).e2e.privatePlugins && secrets.ORG_DOWNLOADS || '' }}
           E2E_PLUGIN_ZIP: ${{ steps.candidate.outputs.zip }}
         # With no ZIP path, `prepare` builds a ZIP from source; require the verified one instead.
         run: |

@@ -23,6 +23,7 @@ runs:
       with:
         # The comparison below needs the merge base with the target branch.
         fetch-depth: 0
+        persist-credentials: false
 
     - name: Validate @version tags on changed PHP files
       shell: bash

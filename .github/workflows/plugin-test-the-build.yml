@@ -1,0 +1,213 @@
+name: Test the build
+
+# The caller owns the pull_request trigger, concurrency, and workflow name used by
+# the Playground artifact proxy. The build and preview never receive a write token.
+on:
+  workflow_call:
+    inputs:
+      plugin-slug:
+        description: The directory and main PHP file basename inside the production ZIP.
+        required: true
+        type: string
+      playground-files:
+        description: Newline-delimited browser preview fixture paths under tests/. Empty keeps the download in GitHub.
+        type: string
+        default: ''
+      checkout-ref:
+        description: Exact commit SHA to verify before packaging. Empty uses the event commit and allows PR cache restores.
+        type: string
+        default: ''
+
+permissions: {}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/plugin-build-zip.yml
+    with:
+      checkout-ref: ${{ inputs.checkout-ref }}
+
+  preview:
+    name: Prepare preview
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      comment: ${{ steps.render.outputs.comment }}
+    env:
+      PLUGIN_SLUG: ${{ inputs.plugin-slug }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Require a public repository for browser previews
+        if: inputs.playground-files != '' && github.event.repository.visibility != 'public'
+        run: |
+          echo "::error::The Playground artifact proxy requires a public repository."
+          exit 1
+
+      - name: Checkout preview fixtures and text
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            tests/playground/
+            ${{ inputs.playground-files }}
+
+      - name: Verify production ZIP
+        id: candidate
+        uses: $/actions/verify-candidate-zip
+        with:
+          artifact-id: ${{ needs.build.outputs.artifact-id }}
+          source-sha: ${{ needs.build.outputs.source-sha }}
+          expected-source-sha: ${{ github.sha }}
+          sha256: ${{ needs.build.outputs.sha256 }}
+          zip-name: ${{ needs.build.outputs.slug }}.zip
+          destination: ${{ inputs.playground-files == '' && 'preview-download' || '' }}
+          root: ${{ inputs.plugin-slug }}
+          main-file: ${{ inputs.plugin-slug }}.php
+
+      - name: Check download contents
+        if: inputs.playground-files == ''
+        run: |
+          if [[ -n "$(find preview-download -type l -print -quit)" ]]; then
+            echo "::error::The download must not contain symbolic links."
+            exit 1
+          fi
+
+      - name: Upload installable download
+        if: inputs.playground-files == ''
+        id: download
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ inputs.plugin-slug }}
+          path: preview-download/
+          include-hidden-files: true
+          if-no-files-found: error
+          overwrite: true
+
+      - name: Get the download expiry date
+        if: inputs.playground-files == ''
+        id: expiry
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.download.outputs.artifact-id }}
+        run: |
+          date=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" --jq '.expires_at | split("T")[0]')
+          echo "date=$date" >> "$GITHUB_OUTPUT"
+
+      - name: Package the browser preview
+        if: inputs.playground-files != ''
+        env:
+          PLAYGROUND_FILES: ${{ inputs.playground-files }}
+          ZIP: ${{ steps.candidate.outputs.zip }}
+        run: |
+          unzip -l "$ZIP" "$PLUGIN_SLUG/$PLUGIN_SLUG.php" > /dev/null
+          if ! unzip -Z1 "$ZIP" | awk -v root="$PLUGIN_SLUG/" 'index($0, root) != 1 { exit 1 }'; then
+            echo "::error::The browser preview ZIP must contain only the plugin directory."
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/preview"
+          cp -- "$ZIP" "$RUNNER_TEMP/preview/$PLUGIN_SLUG.zip"
+          while IFS= read -r file; do
+            if [[ -z "$file" ]]; then
+              continue
+            fi
+            if [[ ! "$file" =~ ^tests/([a-zA-Z0-9_-]+/)*[a-zA-Z0-9_.-]+\.php$ || "$(realpath -- "$file")" != "$GITHUB_WORKSPACE/$file" ]]; then
+              echo "::error::Preview fixtures must be PHP files inside tests/."
+              exit 1
+            fi
+            mkdir -p "$RUNNER_TEMP/preview/$(dirname "$file")"
+            cp -- "$file" "$RUNNER_TEMP/preview/$file"
+          done <<< "$PLAYGROUND_FILES"
+
+      - name: Upload the browser preview
+        if: inputs.playground-files != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playground-preview-${{ github.run_id }}
+          path: ${{ runner.temp }}/preview
+          retention-days: 14
+          if-no-files-found: error
+          overwrite: true
+
+      - name: Build the Playground link
+        if: inputs.playground-files != ''
+        id: playground
+        run: |
+          artifact_url=$(jq -rn \
+            --arg org "$GITHUB_REPOSITORY_OWNER" --arg repo "${GITHUB_REPOSITORY#*/}" \
+            --arg workflow "$GITHUB_WORKFLOW" --arg pr "$PR_NUMBER" --arg run "$GITHUB_RUN_ID" \
+            '"https://playground.wordpress.net/plugin-proxy.php?org=\($org|@uri)&repo=\($repo|@uri)&workflow=\($workflow|@uri)&pr=\($pr|@uri)&artifact=playground-preview-\($run|@uri)"')
+          url=$(git show HEAD:tests/playground/blueprint-browser.json | jq -er --arg url "$artifact_url" '
+            if any(.steps[]; .step == "unzip" and .zipFile.url == "__ARTIFACT_URL__") then
+              (.steps[] | select(.step == "unzip" and .zipFile.url == "__ARTIFACT_URL__")).zipFile.url = $url |
+              "https://playground.wordpress.net/#\(tojson|@uri)"
+            else
+              error("The browser blueprint needs an unzip step with __ARTIFACT_URL__.")
+            end
+          ')
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Render the comment and run summary
+        id: render
+        env:
+          BUILD_URL: ${{ steps.download.outputs.artifact-url }}
+          BUILD_EXPIRES: ${{ steps.expiry.outputs.date }}
+          PLAYGROUND_URL: ${{ steps.playground.outputs.url }}
+        run: |
+          export README_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$PR_HEAD_SHA/tests/playground/README.md"
+          python3 - <<'PY' > "$RUNNER_TEMP/comment.md"
+          from os import environ
+          from string import Template
+          from subprocess import check_output
+
+          keys = ("BUILD_URL", "BUILD_EXPIRES", "PLAYGROUND_URL", "README_URL", "PLUGIN_SLUG", "PR_NUMBER", "GITHUB_RUN_ID")
+          values = {key: environ.get(key, "") for key in keys}
+          template = check_output(["git", "show", "HEAD:tests/playground/comment.md"], text=True)
+          body = Template(template).safe_substitute(values)
+          print("<!-- test-the-build -->\n### Test the build\n")
+          print(body.rstrip())
+          PY
+          {
+            printf '\n---\n\nBuild info:\n\n- Latest commit: %s\n- Build time: %s\n\n' "$PR_HEAD_SHA" "$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+            printf '_Note: the build is updated when a new commit is pushed to this PR._\n'
+          } >> "$RUNNER_TEMP/comment.md"
+          cat "$RUNNER_TEMP/comment.md" >> "$GITHUB_STEP_SUMMARY"
+          printf 'comment=%s\n' "$(base64 < "$RUNNER_TEMP/comment.md" | tr -d '\n')" >> "$GITHUB_OUTPUT"
+
+  comment:
+    name: Update PR comment
+    needs: preview
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Find and update the preview comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          COMMENT: ${{ needs.preview.outputs.comment }}
+        run: |
+          test -n "$COMMENT"
+          printf '%s' "$COMMENT" | base64 --decode > "$RUNNER_TEMP/comment.md"
+          ids=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- test-the-build -->"))) | .id')
+          comment_id=${ids%%$'\n'*}
+          if [[ -n "$comment_id" ]]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" -F "body=@$RUNNER_TEMP/comment.md" --silent
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" -F "body=@$RUNNER_TEMP/comment.md" --silent
+          fi

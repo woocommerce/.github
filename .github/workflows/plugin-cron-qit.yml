@@ -14,6 +14,11 @@ name: Cron QIT
 
 on:
   workflow_call:
+    inputs:
+      # Enable the private QIT action from a private WooCommerce repository.
+      use-qit-action:
+        type: boolean
+        default: false
     secrets:
       # QIT partner credentials.
       ORG_PARTNER_USER:
@@ -58,6 +63,7 @@ jobs:
           ORG_PARTNER_SECRET: ${{ secrets.ORG_PARTNER_SECRET }}
         with:
           extension: ${{ fromJSON(needs.config.outputs.json).qit.extension }}
+          use-qit-action: ${{ inputs.use-qit-action }}
           plugins: ${{ fromJSON(needs.config.outputs.json).qit.plugins }}
           artifact: 'acceptance-test-zip'
           derivative: ${{ fromJSON(needs.config.outputs.json).qit.derivativeExclude != '' && 'qit-derivative' || '' }}

@@ -20,6 +20,11 @@ name: Cron CI
 
 on:
   workflow_call:
+    inputs:
+      # Enable the private QIT action from a private WooCommerce repository.
+      use-qit-action:
+        type: boolean
+        default: false
     secrets:
       # Private plugin downloads (PHPStan stubs, PHPUnit, E2E). Fork pull requests never receive it.
       ORG_DOWNLOADS:
@@ -142,6 +147,7 @@ jobs:
           ORG_PARTNER_SECRET: ${{ secrets.ORG_PARTNER_SECRET }}
         with:
           extension: ${{ fromJSON(needs.config.outputs.json).qit.extension }}
+          use-qit-action: ${{ inputs.use-qit-action }}
           plugins: ${{ fromJSON(needs.config.outputs.json).qit.plugins }}
           artifact: 'acceptance-test-zip'
           derivative: ${{ fromJSON(needs.config.outputs.json).qit.derivativeExclude != '' && 'qit-derivative' || '' }}

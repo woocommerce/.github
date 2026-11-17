@@ -1,7 +1,7 @@
 name: Run QIT
 
-# QIT tests on the production ZIP the caller built (the `artifact` input), one QIT CLI command per
-# enabled `test-*` input. The security and PHP compatibility scans use the QIT derivative instead
+# QIT tests on the production ZIP the caller built (the `artifact` input), one run per enabled
+# `test-*` input. The security and PHP compatibility scans use the QIT derivative instead
 # when `derivative` names one, after checking its lineage record against the production ZIP.
 #
 #   qit-tests:
@@ -29,6 +29,10 @@ on:
       artifact:
         type: string
         required: true
+      # Private WooCommerce repositories can opt in to the private QIT action.
+      use-qit-action:
+        type: boolean
+        default: false
       # Artifact with <extension>-qit.zip (config.woo.qit.derivativeExclude removed) and its
       # lineage record. When set, the security and PHP compatibility scans use it.
       derivative:
@@ -115,8 +119,128 @@ env:
 
 jobs:
 
-  qit-tests:
+  qit-action:
+    # GitHub resolves actions before running steps. Gate the job so public callers never
+    # need to resolve the private action, and keep the CLI for async runs and extra options.
+    if: inputs.use-qit-action && inputs.wait && inputs.options == ''
+    name: Run QIT Action
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    steps:
+      - name: Prepare QIT configuration
+        id: config
+        env:
+          QIT_INPUTS: ${{ toJSON(inputs) }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
 
+          inputs = json.loads(os.environ['QIT_INPUTS'])
+
+          def plugins(key):
+              return [slug.strip() for slug in inputs.get(key, '').split(',') if slug.strip()]
+
+          versions = {
+              'wordpress_version': os.environ['WP_VERSION_ARG'],
+              'woocommerce_version': os.environ['WC_VERSION_ARG'],
+          }
+          php = {'php_version': os.environ['PHP_VERSION']}
+          additional = {'additional_plugins': plugins('test-additional-plugins')}
+          scan = {'zip': os.environ['EXTENSION_SLUG'] + '-qit.zip'} if inputs.get('derivative') else {}
+          checks = {
+              'activation': {**versions, **php, 'additional_plugins': plugins('plugins')},
+              'security': scan,
+              'phpcompatibility': scan,
+              'phpstan': {**versions, **additional},
+              'woo-api': {**versions, **php, **additional},
+              'woo-e2e': {**versions, **php, **additional},
+              'malware': {},
+              'plugin-check': {},
+              'validation': php,
+              'api-fuzz': {},
+          }
+          config = {name: [options] for name, options in checks.items()
+                    if inputs.get('test-' + name) == 'true'}
+          if config:
+              path = Path(os.environ['RUNNER_TEMP']) / 'qit-config.json'
+              path.write_text(json.dumps(config))
+              # Remote checks start first, but the polling deadline starts after the local tests.
+              # Reserve time for those tests plus setup and artifact upload within the job cap.
+              local_minutes = {'activation': 5, 'woo-api': 6, 'woo-e2e': 20}
+              wait = max(1, inputs['timeout-minutes'] - 5
+                         - sum(minutes for name, minutes in local_minutes.items() if name in config))
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+                  print(f'config={path}', f'wait-minutes={wait}', sep='\n', file=output)
+          PY
+
+      - name: Download the ZIP
+        if: steps.config.outputs.config != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: ${{ inputs.artifact }}
+
+      - name: Download the QIT derivative
+        if: inputs.derivative != '' && (inputs.test-security == 'true' || inputs.test-phpcompatibility == 'true')
+        id: derivative
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: ${{ inputs.derivative }}
+
+      - name: Verify QIT derivative lineage
+        if: steps.derivative.outcome == 'success'
+        run: |
+          manifest="$EXTENSION_SLUG-qit.json"
+          parent=$(jq -er '.production_sha256' "$manifest")
+          digest=$(jq -er '.derivative_sha256' "$manifest")
+          printf '%s  %s\n%s  %s\n' "$parent" "$EXTENSION_SLUG.zip" "$digest" "$EXTENSION_SLUG-qit.zip" | sha256sum --check -
+          cat "$manifest" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set up PHP for QIT
+        if: steps.config.outputs.config != ''
+        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: '8.4'
+          extensions: curl, mbstring, xml, zip
+
+      - name: Run QIT tests
+        id: qit
+        if: steps.config.outputs.config != ''
+        uses: woocommerce/qit-action@afe521443aa477a118bf2517dbf6a0564fa285a0 # v2
+        with:
+          extension: ${{ inputs.extension }}
+          zip: ${{ inputs.extension }}.zip
+          config: ${{ steps.config.outputs.config }}
+          config-format: legacy
+          fail-on-warning: true
+          wait-minutes: ${{ steps.config.outputs.wait-minutes }}
+          partner-user: ${{ secrets.ORG_PARTNER_USER }}
+          partner-secret: ${{ secrets.ORG_PARTNER_SECRET }}
+
+      - name: Summarize QIT results
+        if: ${{ !cancelled() && steps.qit.outputs.results-file != '' }}
+        env:
+          QIT_RESULTS_FILE: ${{ steps.qit.outputs.results-file }}
+        run: |
+          {
+            echo '| QIT check | Result | ID | WordPress | WooCommerce | PHP |'
+            echo '| --- | --- | --- | --- | --- | --- |'
+            jq -r '.test_runs[] |
+              [.test_type, .status, .test_run_id, .wordpress_version, .woocommerce_version, .php_version] |
+              map(. // "-" | tostring | gsub("[\r\n|]"; " ")) |
+              "| " + join(" | ") + " |"' "$QIT_RESULTS_FILE"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload results
+        if: ${{ !cancelled() && steps.qit.outputs.results-file != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: qit-results
+          path: ${{ steps.qit.outputs.results-file }}
+
+  qit-tests:
+        if: ${{ !inputs.use-qit-action || !inputs.wait || inputs.options != '' }}
         name: Run QIT Tests
         runs-on: ubuntu-latest
         # The API fuzz campaign alone can take up to 45 minutes.

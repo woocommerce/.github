@@ -1,0 +1,14 @@
+name: Load plugin release tools
+description: Locate the release scripts from the caller's pinned shared workflow revision.
+
+outputs:
+  directory:
+    description: Absolute path to the shared release scripts for this job.
+    value: ${{ steps.tools.outputs.directory }}
+
+runs:
+  using: composite
+  steps:
+    - id: tools
+      shell: bash
+      run: printf 'directory=%s\n' "$GITHUB_ACTION_PATH" >> "$GITHUB_OUTPUT"

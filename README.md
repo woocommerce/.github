@@ -29,7 +29,7 @@ Public repositories can pass `playground-files` to package the listed PHP fixtur
 
 ## Credentials and caches
 
-External review runs on the base workflow and uses its explicit review credential. Fork PRs cannot use same-repository private-plugin coverage. Check which suites need a same-repo branch before merging. Release credentials belong in the steps that use them. Explicit release-candidate refs bypass dependency caches where the callers disable caching.
+External review runs on the base workflow and uses its explicit review credential. Fork PRs cannot use same-repository private-plugin coverage. Check which suites need a same-repo branch before merging. Release credentials belong in the steps that use them. Release jobs load their scripts from the pinned shared workflow revision. Candidate checkouts supply versions, change entries, and the tested ZIP. Both Marketplace submission and confirmation use the same product ID from the reviewed trunk config. Explicit release-candidate refs bypass dependency caches where the callers disable caching.
 
 PRs restore pnpm, Composer, and Playwright caches. Eligible scheduled and trunk runs restore and save those same keys. Compare cache hits and runner time in the pilot when changing cache keys or writers.
 

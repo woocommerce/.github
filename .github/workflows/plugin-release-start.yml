@@ -118,19 +118,25 @@ jobs:
               with:
                 php-version: '8.4'
 
-            - name: Bump versions
-              run: |
-                ARGS=( "$VERSION" )
-                [[ -n "$WP_VERSION" ]] && ARGS+=( --wp "$WP_VERSION" )
-                [[ -n "$WC_VERSION" ]] && ARGS+=( --wc "$WC_VERSION" )
-                echo "Running: bash ./bin/update_version.sh ${ARGS[*]}"
-                bash ./bin/update_version.sh "${ARGS[@]}"
-
             - name: Read plugin metadata
               id: config
               uses: $/actions/read-plugin-config
               with:
                 checkout: 'false'
+
+            - name: Load release tools
+              id: tools
+              uses: $/actions/plugin-release-tools
+
+            - name: Bump versions
+              env:
+                RELEASE_TOOLS: ${{ steps.tools.outputs.directory }}
+                CONFIG_READER: ${{ steps.config.outputs.reader }}
+              run: |
+                ARGS=( "$VERSION" )
+                [[ -n "$WP_VERSION" ]] && ARGS+=( --wp "$WP_VERSION" )
+                [[ -n "$WC_VERSION" ]] && ARGS+=( --wc "$WC_VERSION" )
+                bash "$RELEASE_TOOLS/update_version.sh" "${ARGS[@]}"
 
             - name: Install PHP dependencies
               run: composer install --prefer-dist --no-progress --no-ansi --no-interaction
@@ -155,7 +161,9 @@ jobs:
             # WordPress.org reads the changelog from readme.txt (config.woo.release.readmeChangelog).
             - name: Sync readme.txt changelog
               if: fromJSON(steps.config.outputs.json).release.readmeChangelog
-              run: bash bin/sync_readme_changelog.sh "$VERSION"
+              env:
+                RELEASE_TOOLS: ${{ steps.tools.outputs.directory }}
+              run: bash "$RELEASE_TOOLS/sync_readme_changelog.sh" "$VERSION"
 
             - name: Open the next release milestone
               env:

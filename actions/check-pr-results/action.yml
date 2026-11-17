@@ -1,0 +1,31 @@
+name: Check pull request results
+description: Require successful PR CI and successful or skipped version validation.
+
+inputs:
+  ci-result:
+    description: The result of the PR CI job.
+    required: true
+  version-result:
+    description: The result of the version validation job.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Check the PR results
+      shell: bash
+      env:
+        CI_RESULT: ${{ inputs.ci-result }}
+        VERSION_RESULT: ${{ inputs.version-result }}
+      run: |
+        echo "CI: $CI_RESULT"
+        if [[ "$CI_RESULT" != 'success' ]]; then
+          echo "::error::CI did not pass ($CI_RESULT). Its CI / Check results job lists each check."
+          exit 1
+        fi
+
+        echo "Version validation: $VERSION_RESULT"
+        if [[ "$VERSION_RESULT" != 'success' && "$VERSION_RESULT" != 'skipped' ]]; then
+          echo "::error::Version validation did not pass ($VERSION_RESULT). See the Validate @version Tag job."
+          exit 1
+        fi

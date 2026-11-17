@@ -4,10 +4,16 @@ on:
   pull_request:
     paths:
       - .github/workflows/plugin-pr-ci.yml
+      - .github/workflows/plugin-build-zip.yml
+      - .github/workflows/plugin-js-lint.yml
+      - .github/workflows/plugin-phpunit.yml
+      - .github/workflows/plugin-release-smoke-test.yml
       - .github/workflows/plugin-release-start.yml
+      - .github/workflows/plugin-release.yml
       - .github/workflows/validate-shared-pr-scripts.yml
       - actions/check-changelog/**
       - actions/check-version/**
+      - actions/read-plugin-config/**
       - actions/read-pr-versions/**
       - tests/pr-validation.sh
 
@@ -57,3 +63,47 @@ jobs:
           all: 'true'
       - name: Verify all-mode validation ran
         run: test -f validated-changelog
+
+  validate-config:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Prepare extension metadata without its own reader
+        run: |
+          cat > package.json <<'JSON'
+          {
+            "name": "example-extension",
+            "version": "1.0.0",
+            "config": {
+              "woo": {
+                "zip": { "phpCompatibility": { "testVersion": "7.4-8.5" } },
+                "phpunit": {
+                  "phpInput": "replace",
+                  "legs": [{ "php": "7.4", "wp": "minimum", "wc": "minimum" }]
+                },
+                "integration": {
+                  "legs": [{ "php": "8.4", "wp": "previous", "wc": "latest", "script": "test:php:integration" }]
+                }
+              }
+            }
+          }
+          JSON
+          printf '<?php\n/**\n * Requires at least: 6.8\n * WC requires at least: 10.4\n */\n' > example-extension.php
+      - name: Read plugin metadata
+        id: config
+        uses: $/actions/read-plugin-config
+        with:
+          checkout: 'false'
+      - name: Verify config and PHPUnit legs
+        env:
+          CONFIG: ${{ steps.config.outputs.json }}
+          CONFIG_READER: ${{ steps.config.outputs.reader }}
+        run: |
+          jq -e '.slug == "example-extension" and .zip.phpCompatibility.testVersion == "7.4-8.5"' <<< "$CONFIG"
+          matrix=$(bash "$CONFIG_READER" --phpunit-matrix)
+          jq -e 'length == 1 and .[0].php == "7.4" and .[0].wp == "6.8" and .[0].wc == "10.4.0"' <<< "$matrix"
+          matrix=$(SUITE=integration PREVIOUS_WP=6.9 REQUESTED_WC=11.2.0 REQUESTED_PHP=8.3 bash "$CONFIG_READER" --phpunit-matrix)
+          jq -e 'length == 1 and .[0].php == "8.3" and .[0].wp == "6.9" and .[0].wc == "11.2.0" and .[0].script == "test:php:integration"' <<< "$matrix"

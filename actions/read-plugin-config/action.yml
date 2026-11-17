@@ -1,5 +1,5 @@
 name: Read plugin config
-description: Check out the plugin's package.json and config reader at a ref, and output package.json config.woo with every default applied, as JSON.
+description: Read and validate a plugin's config.woo with the pinned WooCommerce extension tooling reader.
 
 # Example, in a job whose outputs other jobs read:
 #
@@ -11,35 +11,48 @@ description: Check out the plugin's package.json and config reader at a ref, and
 #       - id: config
 #         uses: woocommerce/.github/actions/read-plugin-config@<commit SHA>
 #
-# The plugin provides the reader, bin/woo-config.sh, and its schema, bin/woo-config.schema.json.
-# Developers run the same reader locally.
-
 inputs:
   ref:
-    description: Ref to read the config from. Empty reads the commit the workflow runs on.
+    description: Ref to check out. Empty reads the commit the workflow runs on.
     required: false
     default: ''
+  checkout:
+    description: Set to false to read package.json from an existing checkout.
+    required: false
+    default: 'true'
 
 outputs:
   json:
     description: The normalized config.woo object.
     value: ${{ steps.config.outputs.json }}
+  reader:
+    description: Absolute path to the shared reader for additional calls in this job.
+    value: ${{ steps.config.outputs.reader }}
 
 runs:
   using: composite
   steps:
     - name: Check out the package metadata
+      if: inputs.checkout == 'true'
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         ref: ${{ inputs.ref }}
         persist-credentials: false
-        sparse-checkout: |
-          package.json
-          bin/woo-config.sh
-          bin/woo-config.schema.json
+        sparse-checkout: package.json
         sparse-checkout-cone-mode: false
 
     - name: Read config.woo
       id: config
       shell: bash
-      run: bash bin/woo-config.sh --github-output
+      run: |
+        directory=$(mktemp -d "$RUNNER_TEMP/woo-config.XXXXXX")
+        # Fetch both files from the same reviewed WooCommerce trunk commit.
+        base_url=https://raw.githubusercontent.com/woocommerce/woocommerce/5d6ecd70aaacefcdbd476cc183ab229a446f2f64/packages/js/extension-tooling/bin
+        for file in woo-config.sh woo-config.schema.json; do
+          curl --fail --silent --show-error --proto '=https' \
+            --connect-timeout 10 --max-time 30 --retry 3 \
+            --output "$directory/$file" "$base_url/$file"
+        done
+        reader="$directory/woo-config.sh"
+        bash "$reader" --github-output
+        printf 'reader=%s\n' "$reader" >> "$GITHUB_OUTPUT"

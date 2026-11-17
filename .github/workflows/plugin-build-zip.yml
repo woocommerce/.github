@@ -57,7 +57,9 @@ jobs:
 
       - name: Read plugin metadata
         id: config
-        run: bash bin/woo-config.sh --github-output
+        uses: $/actions/read-plugin-config
+        with:
+          checkout: 'false'
 
       - name: Set up Node.js and the pnpm store cache
         uses: $/actions/setup-plugin-env
@@ -104,16 +106,17 @@ jobs:
 
       - name: Identify production ZIP
         id: identity
+        env:
+          SLUG: ${{ fromJSON(steps.config.outputs.json).slug }}
         run: |
-          slug=$(bash bin/woo-config.sh .slug)
-          archive="deploy/$slug.zip"
+          archive="deploy/$SLUG.zip"
           # Release branches cut before the deploy/ directory still write the ZIP to the checkout root.
           if [[ ! -f "$archive" ]]; then
-            archive="$slug.zip"
+            archive="$SLUG.zip"
           fi
           source_sha=$(git rev-parse HEAD)
           checksum=$(sha256sum "$archive")
-          printf 'slug=%s\nsource-sha=%s\nsha256=%s\narchive=%s\n' "$slug" "$source_sha" "${checksum%% *}" "$archive" >> "$GITHUB_OUTPUT"
+          printf 'slug=%s\nsource-sha=%s\nsha256=%s\narchive=%s\n' "$SLUG" "$source_sha" "${checksum%% *}" "$archive" >> "$GITHUB_OUTPUT"
 
       - name: Check production ZIP PHP compatibility
         if: fromJSON(steps.config.outputs.json).zip.phpCompatibility != null

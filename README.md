@@ -17,7 +17,7 @@ Plugin repositories keep the event triggers, required checks, and repository set
 
 `Required checks`, `Check changelog`, and `Validate @version Tag` are the plugin branch protection contexts. Keep their names stable. The aggregate PR check expects each applicable job to succeed and fails on drafts.
 
-Set capabilities, versions, packaging options, and release product IDs in `package.json` under `config.woo`. The plugin's `bin/woo-config.sh` validates the settings against its schema and supplies defaults. Repository-specific setup belongs in the documented `bin/hooks/` scripts and package commands. These run in the checkout that supplies the candidate code.
+Set capabilities, versions, packaging options, and release product IDs in `package.json` under `config.woo`. The [configuration action](actions/read-plugin-config/action.yml) validates those settings with the WooCommerce reader and schema from one reviewed commit. The reader runs with Bash and jq before plugin dependency installation. Repository-specific setup belongs in the documented `bin/hooks/` scripts and package commands. These run in the checkout that supplies the candidate code.
 
 PR CI reads configuration from the merge commit and version overrides from the PR head subject. A reusable job can accept the PR's configuration for that event commit. A job that checks out a different ref reads configuration from that ref. Pass artifact IDs, source SHAs, and checksums from build jobs to consumers so they verify the right ZIP.
 

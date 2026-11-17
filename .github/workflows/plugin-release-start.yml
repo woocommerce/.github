@@ -126,17 +126,17 @@ jobs:
                 echo "Running: bash ./bin/update_version.sh ${ARGS[*]}"
                 bash ./bin/update_version.sh "${ARGS[@]}"
 
+            - name: Install PHP dependencies
+              run: composer install --prefer-dist --no-progress --no-ansi --no-interaction
+
+            # Use the PR validator over all the change files that the release will compile.
+            - name: Validate all changelog entries
+              uses: $/actions/check-changelog
+              with:
+                all: 'true'
+
             - name: Compile changelog
               run: |
-                composer install --prefer-dist --no-progress --no-ansi --no-interaction
-
-                # The same check the pull request gate runs, over everything the compile
-                # is about to consume. A change file can reach trunk without that gate
-                # seeing it (a pull request labeled 'no changelog' that adds one anyway),
-                # and a malformed one must stop the release rather than land in
-                # changelog.txt and break the next parse.
-                bash bin/check_changelog.sh --all
-
                 # Compiles changelog/ into changelog.txt under the release version and
                 # today's date, then deletes the change files it consumed. Deliberately
                 # no --yes: in non-interactive mode that would push past a bad change

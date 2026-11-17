@@ -1,0 +1,59 @@
+name: Validate shared PR scripts
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/plugin-pr-ci.yml
+      - .github/workflows/plugin-release-start.yml
+      - .github/workflows/validate-shared-pr-scripts.yml
+      - actions/check-changelog/**
+      - actions/check-version/**
+      - actions/read-pr-versions/**
+      - tests/pr-validation.sh
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: $/actions/read-pr-versions
+        id: versions
+      - name: Verify version outputs
+        env:
+          WC_VERSION: ${{ steps.versions.outputs.WC_VERSION }}
+          WP_VERSION: ${{ steps.versions.outputs.WP_VERSION }}
+          PHP_VERSION: ${{ steps.versions.outputs.PHP_VERSION }}
+        run: |
+          subject=$(git -C pr-head show -s --format=%s)
+          php_expected=$(node actions/read-pr-versions/parse-commit-message-args.js "$subject" php-version __default__)
+          wp_expected=$(node actions/read-pr-versions/parse-commit-message-args.js "$subject" wp-version __default__)
+          wc_expected=$(node actions/read-pr-versions/parse-commit-message-args.js "$subject" wc-version __default__)
+          test "$PHP_VERSION" = "${php_expected%__default__}"
+          test "$WP_VERSION" = "${wp_expected%__default__}"
+          test "$WC_VERSION" = "${wc_expected%__default__}"
+      - name: Test the shared validators
+        run: bash tests/pr-validation.sh
+      - name: Prepare a release changelog fixture
+        run: |
+          mkdir -p changelog vendor/bin
+          printf '{}\n' > package.json
+          printf 'Significance: patch\nType: fix\n\nOne line.\n' > changelog/entry
+          cat > vendor/bin/changelogger <<'PHP'
+          <?php
+          if ( ! in_array( 'changelog/entry', $argv, true ) ) {
+              exit( 1 );
+          }
+          file_put_contents( 'validated-changelog', '' );
+          PHP
+          chmod +x vendor/bin/changelogger
+      - uses: $/actions/check-changelog
+        with:
+          all: 'true'
+      - name: Verify all-mode validation ran
+        run: test -f validated-changelog

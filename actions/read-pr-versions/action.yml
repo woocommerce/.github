@@ -1,0 +1,40 @@
+name: Read PR test versions
+description: Read the WordPress, WooCommerce and PHP test version overrides from the PR head commit subject.
+
+outputs:
+  WC_VERSION:
+    description: WooCommerce version override.
+    value: ${{ steps.versions.outputs.WC_VERSION }}
+  WP_VERSION:
+    description: WordPress version override.
+    value: ${{ steps.versions.outputs.WP_VERSION }}
+  PHP_VERSION:
+    description: PHP version override.
+    value: ${{ steps.versions.outputs.PHP_VERSION }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check out the PR head commit
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        ref: ${{ github.event.pull_request.head.sha }}
+        persist-credentials: false
+        path: pr-head
+        sparse-checkout: .github
+
+    - name: Extract test versions
+      id: versions
+      shell: bash
+      working-directory: pr-head
+      run: |
+        commit_message=$(git show -s --format=%s)
+        parser="$GITHUB_ACTION_PATH/parse-commit-message-args.js"
+        wc_version=$(node "$parser" "$commit_message" "wc-version" "__default__")
+        wp_version=$(node "$parser" "$commit_message" "wp-version" "__default__")
+        php_version=$(node "$parser" "$commit_message" "php-version" "__default__")
+        {
+          echo "WC_VERSION=${wc_version%__default__}"
+          echo "WP_VERSION=${wp_version%__default__}"
+          echo "PHP_VERSION=${php_version%__default__}"
+        } | tee -a "$GITHUB_OUTPUT"

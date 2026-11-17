@@ -1,5 +1,5 @@
 name: Check @version tags
-description: Require `@version x.x.x` in the class, trait or interface DocBlock of every PHP file a plugin pull request changes, with the plugin's own bin/version_updated.sh.
+description: Require `@version x.x.x` in the class, trait, interface or enum DocBlock of every PHP file a plugin pull request changes.
 
 # Use it as the only step of the job that branch protection requires, so the check keeps its name:
 #
@@ -44,4 +44,4 @@ runs:
         echo "🔹 Changed PHP files:"
         echo "$FILES"
         mapfile -t FILE_ARRAY <<< "$FILES"
-        bash bin/version_updated.sh "${FILE_ARRAY[@]}"
+        bash "$GITHUB_ACTION_PATH/version_updated.sh" "${FILE_ARRAY[@]}"

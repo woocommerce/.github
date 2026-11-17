@@ -21,6 +21,8 @@ Set capabilities, versions, packaging options, and release product IDs in `packa
 
 PR CI reads configuration from the merge commit and version overrides from the PR head subject. A reusable job can accept the PR's configuration for that event commit. A job that checks out a different ref reads configuration from that ref. Pass artifact IDs, source SHAs, and checksums from build jobs to consumers so they verify the right ZIP.
 
+Set `config.woo.zip.phpCompatibility.testVersion` to a PHP range such as `7.4-8.5` to scan the production ZIP with PHPCompatibilityWP before the build uploads it. The shared rules include bundled dependencies. Set `config.woo.zip.phpCompatibility.ignore` to a comma-separated list of PHPCS patterns for explicit exclusions, such as a dependency's version-guarded files. A plugin can supply `config.woo.zip.phpCompatibility.ruleset` to use its own PHPCS ruleset and locked `tools/php-quality` dependencies. Set the PHP range in that ruleset or in `testVersion`.
+
 The preview workflow verifies the production ZIP and renders `tests/playground/comment.md` from the tested PR commit in the run summary. It also updates the PR comment on same-repository PRs, except Dependabot PRs. The template can use `$README_URL`, `$PLUGIN_SLUG`, `$PR_NUMBER`, and `$GITHUB_RUN_ID`. The GitHub download uses `$BUILD_URL` and `$BUILD_EXPIRES`.
 
 Public repositories can pass `playground-files` to package the listed PHP fixtures alongside the ZIP. Put the browser blueprint in `tests/playground/blueprint-browser.json` with `__ARTIFACT_URL__` as the `unzip` step's `zipFile.url` and use `$PLAYGROUND_URL` in the comment. The proxy link includes the workflow name, so keep the caller named `Test the build`.

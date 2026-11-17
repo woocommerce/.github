@@ -115,7 +115,18 @@ jobs:
           checksum=$(sha256sum "$archive")
           printf 'slug=%s\nsource-sha=%s\nsha256=%s\narchive=%s\n' "$slug" "$source_sha" "${checksum%% *}" "$archive" >> "$GITHUB_OUTPUT"
 
-      # Checks of the shipped ZIP itself, such as PHP compatibility of every PHP file it contains.
+      - name: Check production ZIP PHP compatibility
+        if: fromJSON(steps.config.outputs.json).zip.phpCompatibility != null
+        uses: $/actions/check-zip-php-compatibility
+        with:
+          archive: ${{ steps.identity.outputs.archive }}
+          plugin-root: ${{ fromJSON(steps.config.outputs.json).zip.root }}
+          main-file: ${{ fromJSON(steps.config.outputs.json).mainFile }}
+          test-version: ${{ fromJSON(steps.config.outputs.json).zip.phpCompatibility.testVersion }}
+          ruleset: ${{ fromJSON(steps.config.outputs.json).zip.phpCompatibility.ruleset }}
+          ignore: ${{ fromJSON(steps.config.outputs.json).zip.phpCompatibility.ignore }}
+
+      # Older candidates and other consumers may still provide a package hook.
       - name: Run repository package checks
         if: hashFiles('bin/hooks/package-check.sh') != ''
         env:

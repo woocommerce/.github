@@ -1,0 +1,20 @@
+{
+  "name": "woocommerce/production-zip-php-compatibility",
+  "description": "Dependencies for the shared production ZIP compatibility action.",
+  "license": "GPL-3.0-or-later",
+  "require-dev": {
+    "dealerdirect/phpcodesniffer-composer-installer": "1.2.1",
+    "phpcompatibility/php-compatibility": "10.0.0-alpha2",
+    "phpcompatibility/phpcompatibility-paragonie": "2.0.0-alpha2",
+    "phpcompatibility/phpcompatibility-wp": "3.0.0-alpha2"
+  },
+  "config": {
+    "allow-plugins": {
+      "dealerdirect/phpcodesniffer-composer-installer": true
+    },
+    "platform": {
+      "php": "8.3.0"
+    },
+    "sort-packages": true
+  }
+}

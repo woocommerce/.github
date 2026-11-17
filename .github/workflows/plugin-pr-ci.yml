@@ -87,32 +87,10 @@ jobs:
           id: config
           uses: $/actions/read-plugin-config
 
-        - name: Checkout the PR head parser
-          uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-          with:
-            ref: ${{ github.event.pull_request.head.sha }}
-            persist-credentials: false
-            path: pr-head
-            sparse-checkout: bin/parse-commit-message-args.js
-            sparse-checkout-cone-mode: false
         # Empty values keep each suite's default versions.
-        - name: Extract values from commit message
+        - name: Read test versions from the PR head commit
           id: extract-commit-values
-          working-directory: pr-head
-          run: |
-            commit_message=$(git show -s --format=%s)
-            echo "$commit_message"
-            wc_version=$(node ./bin/parse-commit-message-args.js "$commit_message" "wc-version" "__default__")
-            wp_version=$(node ./bin/parse-commit-message-args.js "$commit_message" "wp-version" "__default__")
-            php_version=$(node ./bin/parse-commit-message-args.js "$commit_message" "php-version" "__default__")
-            [ "$wc_version" = "__default__" ] && wc_version=""
-            [ "$wp_version" = "__default__" ] && wp_version=""
-            [ "$php_version" = "__default__" ] && php_version=""
-            {
-              echo "WC_VERSION=$wc_version"
-              echo "WP_VERSION=$wp_version"
-              echo "PHP_VERSION=$php_version"
-            } | tee -a "$GITHUB_OUTPUT"
+          uses: $/actions/read-pr-versions
 
     spelling:
       name: Spelling

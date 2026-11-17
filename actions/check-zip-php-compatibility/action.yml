@@ -1,0 +1,36 @@
+name: Check production ZIP PHP compatibility
+description: Scan the packaged plugin with PHPCompatibility before publishing its artifact.
+
+inputs:
+  archive:
+    description: Path to the production ZIP.
+    required: true
+  plugin-root:
+    description: Plugin directory inside the ZIP.
+    required: true
+  main-file:
+    description: Main plugin file relative to the plugin directory.
+    required: true
+  test-version:
+    description: PHPCompatibility testVersion range. Required when using the shared rules.
+    required: false
+  ruleset:
+    description: Optional plugin ruleset used with the checkout's locked tools/php-quality dependencies.
+    required: false
+  ignore:
+    description: Optional comma-separated PHPCS path exclusions for the packaged files.
+    required: false
+
+runs:
+  using: composite
+  steps:
+    - name: Scan packaged PHP
+      shell: bash
+      env:
+        ARCHIVE: ${{ inputs.archive }}
+        PLUGIN_ROOT: ${{ inputs.plugin-root }}
+        MAIN_FILE: ${{ inputs.main-file }}
+        TEST_VERSION: ${{ inputs.test-version }}
+        RULESET: ${{ inputs.ruleset }}
+        IGNORE: ${{ inputs.ignore }}
+      run: bash "$GITHUB_ACTION_PATH/check.sh"

@@ -1,5 +1,5 @@
 name: Check changelog
-description: Require a valid Jetpack Changelogger change file in a plugin pull request, unless the pull request is labeled "no changelog", comes from a release branch or from Dependabot. Runs the plugin's bin/check_changelog.sh.
+description: Validate a plugin's Jetpack Changelogger change files in a pull request or before compiling a release.
 
 # Use it as the only step of the job that branch protection requires, so the check keeps its name:
 #
@@ -21,6 +21,10 @@ description: Require a valid Jetpack Changelogger change file in a plugin pull r
 # trigger time.
 
 inputs:
+  all:
+    description: Validate every change file in the current checkout after Composer dependencies have been installed.
+    required: false
+    default: 'false'
   github-token:
     description: Token that reads the pull request labels.
     required: false
@@ -33,12 +37,18 @@ runs:
       id: decide
       shell: bash
       env:
+        CHECK_ALL: ${{ inputs.all }}
         GH_TOKEN: ${{ inputs.github-token }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
         HEAD_REF: ${{ github.event.pull_request.head.ref }}
         HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
         PR_AUTHOR: ${{ github.event.pull_request.user.login }}
       run: |
+        if [[ "$CHECK_ALL" == "true" ]]; then
+          echo "mode=all" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
         if [[ -z "$PR_NUMBER" ]]; then
           echo "::error::Run this action on a pull_request event."
           exit 1
@@ -84,7 +94,7 @@ runs:
         fi
 
     - name: Check out the pull request
-      if: steps.decide.outputs.mode != 'skip'
+      if: steps.decide.outputs.mode == 'require' || steps.decide.outputs.mode == 'optional'
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         # The check diffs against the merge base with the target branch.
@@ -92,14 +102,14 @@ runs:
         persist-credentials: false
 
     - name: Set up PHP
-      if: steps.decide.outputs.mode != 'skip'
+      if: steps.decide.outputs.mode == 'require' || steps.decide.outputs.mode == 'optional'
       uses: $/actions/setup-plugin-env
       with:
         php-version: '8.4'
         composer-cache: true
 
     - name: Install PHP dependencies
-      if: steps.decide.outputs.mode != 'skip'
+      if: steps.decide.outputs.mode == 'require' || steps.decide.outputs.mode == 'optional'
       shell: bash
       run: composer install --prefer-dist --no-progress --no-ansi --no-interaction
 
@@ -109,8 +119,9 @@ runs:
       env:
         MODE: ${{ steps.decide.outputs.mode }}
       run: |
-        if [[ "$MODE" == "optional" ]]; then
-          bash bin/check_changelog.sh --optional
-        else
-          bash bin/check_changelog.sh
-        fi
+        case "$MODE" in
+          optional) bash "$GITHUB_ACTION_PATH/check_changelog.sh" --optional ;;
+          all) bash "$GITHUB_ACTION_PATH/check_changelog.sh" --all ;;
+          require) bash "$GITHUB_ACTION_PATH/check_changelog.sh" ;;
+          *) echo "::error::Unknown changelog validation mode."; exit 1 ;;
+        esac

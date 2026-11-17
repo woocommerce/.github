@@ -13,12 +13,17 @@ Plugin repositories keep the event triggers, required checks, and repository set
 | `ci-release-smoke-test.yml` | Release branch push | `plugin-release-smoke-test.yml` |
 | `ci-release.yml` | Manual dispatch | `plugin-release.yml` |
 | `request-external-review.yml` | Pull request target | `plugin-request-external-review.yml` |
+| `test-the-build.yml` | Pull request, including drafts | `plugin-test-the-build.yml` |
 
 `Required checks`, `Check changelog`, and `Validate @version Tag` are the plugin branch protection contexts. Keep their names stable. The aggregate PR check expects each applicable job to succeed and fails on drafts.
 
 Set capabilities, versions, packaging options, and release product IDs in `package.json` under `config.woo`. The plugin's `bin/woo-config.sh` validates the settings against its schema and supplies defaults. Repository-specific setup belongs in the documented `bin/hooks/` scripts and package commands. These run in the checkout that supplies the candidate code.
 
 PR CI reads configuration from the merge commit and version overrides from the PR head subject. A reusable job can accept the PR's configuration for that event commit. A job that checks out a different ref reads configuration from that ref. Pass artifact IDs, source SHAs, and checksums from build jobs to consumers so they verify the right ZIP.
+
+The preview workflow verifies the production ZIP and renders `tests/playground/comment.md` from the tested PR commit in the run summary. It also updates the PR comment on same-repository PRs, except Dependabot PRs. The template can use `$README_URL`, `$PLUGIN_SLUG`, `$PR_NUMBER`, and `$GITHUB_RUN_ID`. The GitHub download uses `$BUILD_URL` and `$BUILD_EXPIRES`.
+
+Public repositories can pass `playground-files` to package the listed PHP fixtures alongside the ZIP. Put the browser blueprint in `tests/playground/blueprint-browser.json` with `__ARTIFACT_URL__` as the `unzip` step's `zipFile.url` and use `$PLAYGROUND_URL` in the comment. The proxy link includes the workflow name, so keep the caller named `Test the build`.
 
 ## Credentials and caches
 

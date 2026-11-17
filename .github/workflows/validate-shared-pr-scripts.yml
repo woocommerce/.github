@@ -13,9 +13,11 @@ on:
       - .github/workflows/validate-shared-pr-scripts.yml
       - actions/check-changelog/**
       - actions/check-version/**
+      - actions/plugin-release-tools/**
       - actions/read-plugin-config/**
       - actions/read-pr-versions/**
       - tests/pr-validation.sh
+      - tests/release-tools.sh
 
 permissions:
   contents: read
@@ -107,3 +109,14 @@ jobs:
           jq -e 'length == 1 and .[0].php == "7.4" and .[0].wp == "6.8" and .[0].wc == "10.4.0"' <<< "$matrix"
           matrix=$(SUITE=integration PREVIOUS_WP=6.9 REQUESTED_WC=11.2.0 REQUESTED_PHP=8.3 bash "$CONFIG_READER" --phpunit-matrix)
           jq -e 'length == 1 and .[0].php == "8.3" and .[0].wp == "6.9" and .[0].wc == "11.2.0" and .[0].script == "test:php:integration"' <<< "$matrix"
+
+      - name: Load release tools
+        id: tools
+        uses: $/actions/plugin-release-tools
+      - name: Rehearse the release scripts
+        env:
+          RELEASE_TOOLS: ${{ steps.tools.outputs.directory }}
+          CONFIG_READER: ${{ steps.config.outputs.reader }}
+        run: |
+          command -v svnadmin > /dev/null || { sudo apt-get update && sudo apt-get install -y subversion; }
+          bash tests/release-tools.sh "$RELEASE_TOOLS" "$CONFIG_READER"

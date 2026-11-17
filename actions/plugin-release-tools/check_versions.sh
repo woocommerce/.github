@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+
+# The main plugin file is package.json config.woo.mainFile, or the plugin slug plus .php, never the checkout directory.
+set -e
+
+config=$(bash "${CONFIG_READER:?Pass the path to the shared config reader}")
+MAIN_PLUGIN_FILE=$(jq -er .mainFile <<< "$config")
+if [[ ! -f "$MAIN_PLUGIN_FILE" ]]; then
+	echo "Missing main plugin file: $MAIN_PLUGIN_FILE"
+	exit 1
+fi
+
+# HELPERS.
+BLUE='\033[0;32m'
+NC='\033[0m' # No Color
+UNDERLINE_START='\e[4m'
+UNDERLINE_STOP='\e[0m'
+
+# GET BASE PHP VERSIONS.
+PHP_HEADER_VERSION=$( awk '/\* *Version/ {print}' "$MAIN_PLUGIN_FILE" | sed 's/[^0-9.]*\([0-9.]*\).*/\1/' )
+PHP_IN_VERSION=$PHP_HEADER_VERSION
+# Every config.woo.versionPatterns entry (literal text with %s for the version, a leading ^
+# anchoring it at the start of a line) must carry the header version.
+while IFS=$'\t' read -r file pattern; do
+	anchored=false
+	if [[ "$pattern" == ^* ]]; then
+		anchored=true
+		pattern=${pattern#^}
+	fi
+	before=${pattern%%%s*}
+	after=${pattern#*%s}
+	found=''
+	while IFS= read -r line; do
+		[[ "$anchored" == false || "$line" == "$before"* ]] || continue
+		value=${line#*"$before"}
+		[[ "$value" == *"$after"* ]] || continue
+		if [[ -n "$after" ]]; then
+			found=${value%%"$after"*}
+		else
+			found=${value%%[[:space:]]*}
+		fi
+		break
+	done < <(grep -F -- "$before" "$file" || true)
+	if [[ "$found" != "$PHP_HEADER_VERSION" ]]; then
+		echo "\"$pattern\" in $file has version '$found', the main file header has '$PHP_HEADER_VERSION'... Exiting with error."
+		exit 1
+	fi
+done < <(jq -r '.versionPatterns[] | [.file, .pattern] | @tsv' <<< "$config")
+echo -e "${BLUE}- Main PHP file versions: OK${NC}"
+
+README_VERSION=$( awk '/Stable tag/ {print}' readme.txt | sed 's/[^0-9.]*\([0-9.]*[-dev]*\).*/\1/' )
+PACKAGE_VERSION=$(jq -er .version package.json)
+if [[ -n ${RELEASE_VERSION:-} && "$PACKAGE_VERSION" != "$RELEASE_VERSION" ]]; then
+	echo "Release version does not match package.json."
+	exit 1
+fi
+
+if [[ $PACKAGE_VERSION != "$PHP_IN_VERSION" ]]; then
+	echo "Package.json version does not match with main file... Exiting with error."
+	exit 1
+else
+	echo -e "${BLUE}- Package.json version: OK${NC}"
+fi
+
+if [[ $README_VERSION != "$PHP_IN_VERSION" ]]; then
+	echo "Readme.txt version does not match with main file... Exiting with error."
+	exit 1
+else
+	echo -e "${BLUE}- Readme.txt version: OK${NC}"
+fi
+
+# WordPress.org reads the changelog from readme.txt (config.woo.release.readmeChangelog).
+if [[ "$(jq -r .release.readmeChangelog <<< "$config")" == true ]]; then
+	README_CHANGELOG_EXIST=$( awk -v heading="= $PACKAGE_VERSION - " 'index($0, heading) == 1' readme.txt )
+	if [[ -z $README_CHANGELOG_EXIST ]]; then
+		echo "No readme.txt changelog entry found... Exiting with error."
+		exit 1
+	else
+		echo -e "${BLUE}- Readme.txt changelog version: OK${NC}"
+	fi
+fi
+
+CHANGELOG_EXIST=$( awk -v heading="= $PACKAGE_VERSION - " 'index($0, heading) == 1' changelog.txt )
+if [[ -z $CHANGELOG_EXIST ]]; then
+	echo "No changelog entry found... Exiting with error."
+	exit 1
+else
+	CHANGELOG_DATE=$(awk 'NR == 1 {print $4; exit}' <<< "$CHANGELOG_EXIST")
+	# A real YYYY-MM-DD date comes back unchanged from GNU date or from the BSD form (macOS).
+	# BSD date rolls an impossible date over, and GNU date reads an empty one as today.
+	PARSED_DATE=$(date -d "$CHANGELOG_DATE" +'%Y-%m-%d' 2> /dev/null || date -j -f '%Y-%m-%d' "$CHANGELOG_DATE" +'%Y-%m-%d' 2> /dev/null) || PARSED_DATE=
+	if [[ -z "$CHANGELOG_DATE" || "$PARSED_DATE" != "$CHANGELOG_DATE" ]]; then
+		echo "Invalid date format found in changelog... Exiting with error."
+		exit 1
+	fi
+	echo -e "${BLUE}- Changelog version: OK${NC}"
+fi
+
+echo -e "${UNDERLINE_START}File versions checked. Moving on...${UNDERLINE_STOP}"
+exit 0

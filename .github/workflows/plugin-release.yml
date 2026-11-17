@@ -2,9 +2,8 @@ name: Publish release
 
 # Publishes a plugin release from its release/X.Y.Z branch: resolves the one ready release pull
 # request and pins its commit, runs the plugin's checks on it, builds the production ZIP once,
-# verifies it with Plugin Check and E2E, creates the GitHub release (bin/release.sh), deploys the
-# same ZIP to WooCommerce.com (bin/deploy.sh) or WordPress.org (woocommerce/woo-product-deploy and
-# bin/wporg-deploy.sh), merges the release pull request at the pinned commit, and closes the
+# verifies it with Plugin Check and E2E, creates the GitHub release, deploys the same ZIP to
+# WooCommerce.com or WordPress.org, merges the release pull request at the pinned commit, and closes the
 # milestone. config.woo.release picks the destination. The caller keeps the workflow_dispatch input,
 # runs from trunk and holds the concurrency group, so two releases never overlap.
 #
@@ -131,7 +130,7 @@ jobs:
                 } >> "$GITHUB_OUTPUT"
                 echo "Publishing \`$RELEASE_BRANCH\` at \`$sha\`." >> "$GITHUB_STEP_SUMMARY"
 
-            - name: Checkout version checking tools
+            - name: Checkout trunk metadata
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
                 persist-credentials: false
@@ -143,20 +142,24 @@ jobs:
                 path: release-candidate
                 persist-credentials: false
 
-            - name: Check versions
-              working-directory: release-candidate
-              env:
-                RELEASE_VERSION: ${{ steps.candidate.outputs.version }}
-              run: |
-                bash ../bin/check_versions.sh
-                jq -e --arg version "$RELEASE_VERSION" '.version == $version' package.json > /dev/null
-
-            # Capabilities and the deploy target come from trunk's tooling metadata.
+            # Capabilities and deployment settings come from trunk. Version checks read the candidate.
             - name: Read plugin metadata
               id: config
               uses: $/actions/read-plugin-config
               with:
                 checkout: 'false'
+
+            - name: Load release tools
+              id: tools
+              uses: $/actions/plugin-release-tools
+
+            - name: Check versions
+              working-directory: release-candidate
+              env:
+                RELEASE_TOOLS: ${{ steps.tools.outputs.directory }}
+                RELEASE_VERSION: ${{ steps.candidate.outputs.version }}
+                CONFIG_READER: ${{ steps.config.outputs.reader }}
+              run: bash "$RELEASE_TOOLS/check_versions.sh"
 
     php-lint:
         name: PHP
@@ -233,10 +236,10 @@ jobs:
           actions: read
         outputs:
           artifact_id: ${{ needs.build_project.outputs.artifact-id }}
+          archive: ${{ steps.release_identity.outputs.archive }}
           sha256: ${{ steps.release_identity.outputs.sha256 }}
           version: ${{ steps.release_identity.outputs.version }}
         env:
-          GH_TOKEN: ${{ github.token }}
           GH_RELEASE_COMMIT: ${{ needs.check-versions.outputs.commit }}
           RELEASE_VERSION: ${{ needs.check-versions.outputs.release_version }}
           RELEASE_ARCHIVE: ${{ needs.build_project.outputs.slug }}.zip
@@ -251,11 +254,9 @@ jobs:
                 ref: ${{ needs.check-versions.outputs.commit }}
                 persist-credentials: false
 
-            - name: Checkout release tooling
-              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-              with:
-                path: release-tooling
-                persist-credentials: false
+            - name: Load release tools
+              id: tools
+              uses: $/actions/plugin-release-tools
 
             - name: Require a release candidate ID
               env:
@@ -284,12 +285,15 @@ jobs:
                 test -n "$RELEASE_VERSION"
                 test -s "$RELEASE_ARCHIVE"
                 jq -e --arg version "$RELEASE_VERSION" '.version == $version' package.json > /dev/null
+                echo "archive=$RELEASE_ARCHIVE" >> "$GITHUB_OUTPUT"
                 echo "sha256=$CANDIDATE_SHA256" >> "$GITHUB_OUTPUT"
                 echo "version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
 
             - name: Release
-              run: |
-                bash ./release-tooling/bin/release.sh
+              env:
+                GH_TOKEN: ${{ github.token }}
+                RELEASE_TOOLS: ${{ steps.tools.outputs.directory }}
+              run: bash "$RELEASE_TOOLS/release.sh"
 
     # config.woo.release.target "woocommerce.com": submit the released archive to the marketplace.
     submit-deployment:
@@ -302,7 +306,10 @@ jobs:
           actions: read
           contents: read
         env:
+          # Use the same reviewed product ID for submission and confirmation.
+          PRODUCT_ID: ${{ fromJSON(needs.check-versions.outputs.config).release.productId }}
           RELEASE_ARTIFACT_ID: ${{ needs.release.outputs.artifact_id }}
+          RELEASE_ARCHIVE: ${{ needs.release.outputs.archive }}
           RELEASE_VERSION: ${{ needs.release.outputs.version }}
           RELEASE_SHA256: ${{ needs.release.outputs.sha256 }}
 
@@ -314,11 +321,9 @@ jobs:
                 ref: ${{ needs.check-versions.outputs.commit }}
                 persist-credentials: false
 
-            - name: Checkout deployment tooling
-              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-              with:
-                path: release-tooling
-                persist-credentials: false
+            - name: Load release tools
+              id: tools
+              uses: $/actions/plugin-release-tools
 
             - name: Check release artifact identity
               run: |
@@ -350,38 +355,37 @@ jobs:
             - name: Check marketplace submission status
               id: marketplace
               env:
+                RELEASE_TOOLS: ${{ steps.tools.outputs.directory }}
                 # Organization partner credentials, shared by the woocommerce/* repositories.
                 DEPLOY_API_KEY: ${{ secrets.ORG_PARTNER_USER }}
                 DEPLOY_API_SECRET: ${{ secrets.ORG_PARTNER_DEPLOY_SECRET }}
-              run: |
-                bash ./release-tooling/bin/deploy.sh prepare
+              run: bash "$RELEASE_TOOLS/deploy.sh" prepare
 
             - name: Submit archive to WooCommerce.com
               if: steps.marketplace.outputs.upload == 'true'
               env:
+                RELEASE_TOOLS: ${{ steps.tools.outputs.directory }}
                 DEPLOY_API_KEY: ${{ secrets.ORG_PARTNER_USER }}
                 DEPLOY_API_SECRET: ${{ secrets.ORG_PARTNER_DEPLOY_SECRET }}
-              run: |
-                bash ./release-tooling/bin/deploy.sh submit
+              run: bash "$RELEASE_TOOLS/deploy.sh" submit
 
     deploy:
         name: Confirm deployment
-        needs: [submit-deployment, release]
+        needs: [submit-deployment, release, check-versions]
         runs-on: ubuntu-latest
         timeout-minutes: 40
         env:
+          PRODUCT_ID: ${{ fromJSON(needs.check-versions.outputs.config).release.productId }}
           RELEASE_VERSION: ${{ needs.release.outputs.version }}
         steps:
-            - name: Checkout deployment tooling
-              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-              with:
-                path: release-tooling
-                persist-credentials: false
+            - name: Load release tools
+              id: tools
+              uses: $/actions/plugin-release-tools
 
-            # deploy.sh reads the product ID from the package.json in the working directory.
             - name: Wait for the marketplace to offer the release version
-              working-directory: release-tooling
-              run: bash ./bin/deploy.sh confirm
+              env:
+                RELEASE_TOOLS: ${{ steps.tools.outputs.directory }}
+              run: bash "$RELEASE_TOOLS/deploy.sh" confirm
 
     # config.woo.release.target "wordpress.org": deploys to WordPress.org once config.woo.release.wpOrgSlug
     # is set. Without it, the job finishes after the artifact checks and the release ends at the
@@ -396,6 +400,7 @@ jobs:
         env:
           WP_ORG_SLUG: ${{ fromJSON(needs.check-versions.outputs.config).release.wpOrgSlug }}
           RELEASE_ARTIFACT_ID: ${{ needs.release.outputs.artifact_id }}
+          RELEASE_ARCHIVE: ${{ needs.release.outputs.archive }}
           RELEASE_VERSION: ${{ needs.release.outputs.version }}
           RELEASE_SHA256: ${{ needs.release.outputs.sha256 }}
 
@@ -420,21 +425,21 @@ jobs:
                 artifact-ids: ${{ env.RELEASE_ARTIFACT_ID }}
                 path: .
 
-            - name: Checkout deployment tooling
+            - name: Load release tools
+              id: tools
               if: env.WP_ORG_SLUG != ''
-              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-              with:
-                path: release-tooling
-                persist-credentials: false
+              uses: $/actions/plugin-release-tools
 
             # A retry after the SVN commit landed finds the tag already holding this archive and
             # skips the deploy, which would otherwise fail on the existing tag.
             - name: Check WordPress.org for this version
               id: wporg
               if: env.WP_ORG_SLUG != ''
+              env:
+                RELEASE_TOOLS: ${{ steps.tools.outputs.directory }}
               run: |
                 command -v svn > /dev/null || { sudo apt-get update && sudo apt-get install -y subversion; }
-                bash ./release-tooling/bin/wporg-deploy.sh prepare
+                bash "$RELEASE_TOOLS/wporg-deploy.sh" prepare
 
             - name: Checkout the woo-product-deploy action
               if: steps.wporg.outputs.deploy == 'true'
@@ -458,7 +463,7 @@ jobs:
                 branch: ${{ inputs.branch }}
                 commit: ${{ needs.check-versions.outputs.commit }}
                 version: ${{ env.RELEASE_VERSION }}
-                zip: ${{ needs.build_project.outputs.slug }}.zip
+                zip: ${{ env.RELEASE_ARCHIVE }}
                 zip_sha256: ${{ env.RELEASE_SHA256 }}
                 node_version: '24'
                 npm_version: '11'
@@ -471,7 +476,9 @@ jobs:
 
             - name: Wait for WordPress.org to offer the release version
               if: env.WP_ORG_SLUG != ''
-              run: bash ./release-tooling/bin/wporg-deploy.sh confirm
+              env:
+                RELEASE_TOOLS: ${{ steps.tools.outputs.directory }}
+              run: bash "$RELEASE_TOOLS/wporg-deploy.sh" confirm
 
     merge-release:
         if: ${{ !failure() && !cancelled() && (needs.deploy.result == 'success' || needs.deploy-wporg.result == 'success') }}
@@ -505,19 +512,20 @@ jobs:
         runs-on: ubuntu-latest
         timeout-minutes: 5
         env:
+          PLUGIN_SLUG: ${{ fromJSON(needs.check-versions.outputs.config).slug }}
           RELEASE_VERSION: ${{ needs.check-versions.outputs.release_version }}
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
         steps:
 
-            - name: Checkout repository
-              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-              with:
-                persist-credentials: false
+            - name: Load release tools
+              id: tools
+              uses: $/actions/plugin-release-tools
 
             - name: Update translations
-              run: |
-                bash ./bin/update_translations.sh
+              env:
+                RELEASE_TOOLS: ${{ steps.tools.outputs.directory }}
+                SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+              run: bash "$RELEASE_TOOLS/update_translations.sh"
 
     roll-milestone:
         if: ${{ !failure() && !cancelled() && (needs.deploy.result == 'success' || needs.deploy-wporg.result == 'success') }}

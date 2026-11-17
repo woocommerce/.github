@@ -1,7 +1,7 @@
 name: PHP Unit Tests
 
 # PHPUnit on the host, one job per leg of config.woo.phpunit.legs (or config.woo.integration.legs
-# with `suite: integration`), planned by the plugin's bin/woo-config.sh and installed by its
+# with `suite: integration`), planned by the shared config reader and installed by the plugin's
 # bin/install.sh. Private plugins are downloaded only for trusted callers.
 #
 #   php-tests:
@@ -65,7 +65,9 @@ jobs:
 
       - name: Read plugin metadata
         id: config
-        run: bash bin/woo-config.sh --github-output
+        uses: $/actions/read-plugin-config
+        with:
+          checkout: 'false'
 
       - name: Resolve the legs
         id: matrix
@@ -76,6 +78,7 @@ jobs:
           REQUESTED_WC: ${{ inputs.wc-version != 'latest' && inputs.wc-version != 'stable' && inputs.wc-version || '' }}
           REQUESTED_PHP: ${{ inputs.php-version }}
           CONFIG: ${{ steps.config.outputs.json }}
+          CONFIG_READER: ${{ steps.config.outputs.reader }}
         run: |
           # Sourced from https://github.com/WordPress/gutenberg/blob/d181ce44648e6af799264ccae0eb48d0237579ba/.github/workflows/unit-test.yml#L95
           if jq -e --arg suite "$SUITE" '(if $suite == "integration" then .integration else .phpunit end).legs | any(.wp == "previous")' <<< "$CONFIG" > /dev/null; then
@@ -97,7 +100,7 @@ jobs:
             ')
             export PREVIOUS_WP
           fi
-          matrix=$(bash bin/woo-config.sh --phpunit-matrix)
+          matrix=$(bash "$CONFIG_READER" --phpunit-matrix)
           jq -e 'length > 0' <<< "$matrix" > /dev/null || { echo "::error::No PHPUnit legs for the $SUITE suite."; exit 1; }
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           jq -r '.[] | "- \(.label)"' <<< "$matrix" >> "$GITHUB_STEP_SUMMARY"

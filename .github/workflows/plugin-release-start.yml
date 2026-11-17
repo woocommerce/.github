@@ -126,6 +126,12 @@ jobs:
                 echo "Running: bash ./bin/update_version.sh ${ARGS[*]}"
                 bash ./bin/update_version.sh "${ARGS[@]}"
 
+            - name: Read plugin metadata
+              id: config
+              uses: $/actions/read-plugin-config
+              with:
+                checkout: 'false'
+
             - name: Install PHP dependencies
               run: composer install --prefer-dist --no-progress --no-ansi --no-interaction
 
@@ -145,10 +151,6 @@ jobs:
 
                 echo "Compiled changelog entries for ${VERSION}:"
                 sed -n '3,/^$/p' changelog.txt
-
-            - name: Read plugin metadata
-              id: config
-              run: bash bin/woo-config.sh --github-output
 
             # WordPress.org reads the changelog from readme.txt (config.woo.release.readmeChangelog).
             - name: Sync readme.txt changelog

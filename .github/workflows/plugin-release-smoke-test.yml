@@ -46,7 +46,9 @@ jobs:
 
             - name: Read plugin metadata
               id: config
-              run: bash bin/woo-config.sh --github-output
+              uses: $/actions/read-plugin-config
+              with:
+                checkout: 'false'
 
             - name: Check Versions
               run: |

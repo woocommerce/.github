@@ -21,6 +21,10 @@ name: Test Runner
 on:
   workflow_call:
     inputs:
+      # Enable the private QIT action for synchronous runs without extra options.
+      use-qit-action:
+        type: boolean
+        default: false
       # `latest`, `stable`, `rc`, `nightly` (WooCommerce) or an exact version.
       wp-version:
         type: string
@@ -132,6 +136,7 @@ jobs:
         uses: ./.github/workflows/plugin-qit.yml
         with:
           extension: ${{ fromJSON(needs.config.outputs.json).qit.extension }}
+          use-qit-action: ${{ inputs.use-qit-action }}
           plugins: ${{ fromJSON(needs.config.outputs.json).qit.plugins }}
           artifact: 'acceptance-test-zip'
           derivative: ${{ fromJSON(needs.config.outputs.json).qit.derivativeExclude != '' && 'qit-derivative' || '' }}

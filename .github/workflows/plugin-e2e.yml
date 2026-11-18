@@ -131,6 +131,10 @@ jobs:
         # With no ZIP path, `prepare` builds a ZIP from source; require the verified one instead.
         run: |
           [[ -n "$E2E_PLUGIN_ZIP" && -f "$E2E_PLUGIN_ZIP" ]] || { echo "::error::verify-candidate-zip returned no ZIP."; exit 1; }
+          # Older runners read PHP_VERSION. Newer runners need an explicit, nonempty E2E override.
+          if [[ -n "$PHP_VERSION" ]]; then
+            export E2E_PHP_VERSION="$PHP_VERSION"
+          fi
           bash ./bin/e2e.sh prepare
 
       - name: Run wp-env start

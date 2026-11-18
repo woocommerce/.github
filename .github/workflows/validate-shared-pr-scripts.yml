@@ -7,6 +7,7 @@ on:
       - README.md
       - .github/workflows/plugin-pr-ci.yml
       - .github/workflows/plugin-build-zip.yml
+      - .github/workflows/plugin-e2e.yml
       - .github/workflows/plugin-js-lint.yml
       - .github/workflows/plugin-phpunit.yml
       - .github/workflows/plugin-release-smoke-test.yml

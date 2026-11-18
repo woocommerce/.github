@@ -29,14 +29,14 @@ Public repositories can pass `playground-files` to package the listed PHP fixtur
 
 ## Local changelog and version checks
 
-The shared changelog and PHP `@version` scripts are also Composer binaries in `woocommerce/extension-checks`. Tag the reviewed commit after merging a validator release. Use that commit SHA for the plugin's action pins, and use the exact tag version in the plugin's Composer manifest. For example, a `v1.0.0` tag uses this configuration.
+The shared changelog and PHP `@version` scripts are also Composer binaries in `woocommerce/extension-checks`. Use the reviewed release commit SHA for the plugin's action pins and the exact version in its Composer manifest. The release assets provide a ZIP install for wp-env CLI containers and other environments without Git. For `v1.0.0`, use this configuration.
 
 ```json
 {
     "repositories": [
         {
-            "type": "vcs",
-            "url": "https://github.com/woocommerce/.github",
+            "type": "composer",
+            "url": "https://github.com/woocommerce/.github/releases/download/v1.0.0",
             "only": ["woocommerce/extension-checks"]
         }
     ],
@@ -46,10 +46,36 @@ The shared changelog and PHP `@version` scripts are also Composer binaries in `w
 }
 ```
 
-Commit `composer.lock` and verify that the package's source reference matches the validator action pins. After `composer install`, both commands run offline.
+Commit `composer.lock` and verify that both the source and ZIP references match the validator action pins. After `composer install`, both commands run offline.
 
 - Run `vendor/bin/check_changelog.sh` from the plugin root. It uses the plugin's `package.json` to identify the root and the plugin's `automattic/jetpack-changelogger` development dependency to validate changes.
 - Run `vendor/bin/version_updated.sh <file>...` with the changed PHP files, as lint-staged does. This also works in Composer-only jobs. The local command skips the version check on `trunk`.
+
+### Publishing an update
+
+Tag the reviewed merge commit and create the GitHub release. From this repository, build the ZIP and Composer index for that tag, then attach both files to the release. Keep the index and ZIP on the same tag. Publish a new tag whenever the assets change.
+
+```bash
+tag=v1.0.0
+version=${tag#v}
+ref=$(git rev-parse "$tag^{commit}")
+zip="extension-checks-$version.zip"
+base="https://github.com/woocommerce/.github/releases/download/$tag"
+
+git archive --format=zip --prefix="extension-checks-$version/" --output="$zip" "$ref"
+checksum=$(shasum -a 1 "$zip" | cut -d ' ' -f 1)
+git show "$ref:composer.json" | jq --arg version "$version" --arg ref "$ref" \
+    --arg url "$base/$zip" --arg checksum "$checksum" '
+    . + {
+        version: $version,
+        source: {type: "git", url: "https://github.com/woocommerce/.github.git", reference: $ref},
+        dist: {type: "zip", url: $url, reference: $ref, shasum: $checksum}
+    } | {packages: {(.name): {($version): .}}}
+' > packages.json
+gh release upload "$tag" "$zip" packages.json --repo woocommerce/.github
+```
+
+Before updating callers, run `composer update woocommerce/extension-checks` against the new repository URL and test a clean `composer install --prefer-dist` without Git. Verify that both installed scripts match the release commit.
 
 ## Credentials and caches
 

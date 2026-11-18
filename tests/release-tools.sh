@@ -114,7 +114,14 @@ set -eu
 case "${!#}" in
     'https://woocommerce.com/wp-json/helper/1.0/info')
         [[ " $* " == *" --data-urlencode product_id=$PRODUCT_ID "* ]]
-        jq -cn --arg version "${PUBLISHED_VERSION:-1.2.3}" '{version: $version}'
+        version=${PUBLISHED_VERSION:-1.2.3}
+        if [[ -n ${CONFIRM_POLLS:-} ]]; then
+            printf '%s\n' poll >> "$CONFIRM_POLLS"
+            if [[ $(wc -l < "$CONFIRM_POLLS") -eq ${PUBLISH_ON_POLL:-0} ]]; then
+                version=$RELEASE_VERSION
+            fi
+        fi
+        jq -cn --arg version "$version" '{version: $version}'
         ;;
     'https://woocommerce.com/wp-json/wc/submission/runner/v1/product/deploy/status')
         [[ " $* " == *" --form-string product_id=$PRODUCT_ID "* ]]
@@ -178,6 +185,20 @@ expect_failure 'earlier attempt' env UPLOAD_PREVIOUSLY_ATTEMPTED=true bash "$too
 expect_failure 'checksum does not match' env RELEASE_SHA256="$(printf '%064d' 0)" bash "$tools/deploy.sh" submit
 test "$(grep -cFx uploaded "$RELEASE_LOG")" = 1
 PUBLISHED_VERSION="$RELEASE_VERSION" bash "$tools/deploy.sh" confirm
+
+# Simulate the five-minute polling intervals without waiting for the Marketplace.
+cat > "$fixture/advance-clock" <<'MOCK'
+sleep() {
+    [[ "$1" == 300 ]] || return 1
+    SECONDS=$((SECONDS + $1))
+}
+MOCK
+CONFIRM_POLLS="$fixture/polls" PUBLISH_ON_POLL=17 BASH_ENV="$fixture/advance-clock" bash "$tools/deploy.sh" confirm
+[[ $(wc -l < "$fixture/polls") -eq 17 ]]
+: > "$fixture/polls"
+expect_failure 'has not confirmed' env CONFIRM_POLLS="$fixture/polls" BASH_ENV="$fixture/advance-clock" \
+    bash "$tools/deploy.sh" confirm
+[[ $(wc -l < "$fixture/polls") -eq 17 ]]
 
 # A real local SVN tag exercises retry verification without any deploy credentials.
 export WPORG_SVN_URL="file://$fixture/svn"

@@ -32,6 +32,29 @@ git -c user.name=Test -c user.email=test@example.test commit --quiet --allow-emp
 git update-ref refs/remotes/origin/trunk HEAD
 git switch --quiet --create change
 
+# Run the actual reusable workflow's prepare step against both runner interfaces.
+awk '
+    /^      - name: Setup Environment$/ { step = 1; next }
+    step && /^      - name: / { exit }
+    step && /^        run: \|$/ { run = 1; next }
+    run && /^          / { print substr($0, 11) }
+' "$shared_root/.github/workflows/plugin-e2e.yml" > prepare-e2e.sh
+test -s prepare-e2e.sh
+mkdir -p bin
+touch candidate.zip
+cat > bin/e2e.sh <<'BASH'
+set -u
+[[ $1 == prepare && $PHP_VERSION == "$EXPECTED_PHP" ]] || exit 1
+if [[ -n "$EXPECTED_PHP" ]]; then
+    [[ ${E2E_PHP_VERSION:-} == "$EXPECTED_PHP" ]] || exit 1
+else
+    [[ -z ${E2E_PHP_VERSION+x} ]] || exit 1
+fi
+BASH
+for php_version in '' 8.2; do
+    env -u E2E_PHP_VERSION PHP_VERSION="$php_version" EXPECTED_PHP="$php_version" E2E_PLUGIN_ZIP="$fixture/candidate.zip" bash -e prepare-e2e.sh
+done
+
 printf '<?php\n/** @version x.x.x */\nfinal class Updated {}\n' > 'Updated class.php'
 printf '<?php\nenum Missing {}\n' > 'Missing version.php'
 GITHUB_ACTIONS=false bash "$version_check" 'Updated class.php'

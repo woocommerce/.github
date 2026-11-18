@@ -13,8 +13,11 @@ fi
 
 message="An error occurred while contacting $url. Error: $response."
 printf '%s\n' "$message" >&2
-if [[ -n "${SLACK_WEBHOOK_URL:-}" ]]; then
-    payload=$(jq -cn --arg text "$message" '{text: $text}')
+channel=${SLACK_CHANNEL:-}
+channel=${channel#"${channel%%[![:space:]]*}"}
+channel=${channel%"${channel##*[![:space:]]}"}
+if [[ -n "${SLACK_WEBHOOK_URL:-}" && -n "$channel" ]]; then
+    payload=$(jq -cn --arg text "$message" --arg channel "$channel" '{text: $text, channel: $channel}')
     curl --silent --show-error --max-time 30 --request POST --header 'Content-type: application/json' \
         --data "$payload" "$SLACK_WEBHOOK_URL"
 fi

@@ -149,8 +149,9 @@ case "${!#}" in
         fi
         ;;
     'https://example.invalid/slack')
+        printf '%s\n' slack-requested >> "$RELEASE_LOG"
         while [[ "$1" != --data ]]; do shift; done
-        jq -e '.text | contains("Bad \\\"payload\\\"")' <<< "$2" > /dev/null
+        jq -e '.channel == "#team-releases" and (.text | contains("Bad \\\"payload\\\""))' <<< "$2" > /dev/null
         printf '%s\n' notified >> "$RELEASE_LOG"
         ;;
     *)
@@ -220,6 +221,14 @@ expect_failure 'differs from the released archive' bash "$tools/wporg-deploy.sh"
 bash "$tools/wporg-deploy.sh" confirm
 
 PLUGIN_SLUG=example-extension bash "$tools/update_translations.sh"
+for channel in '' '   '; do
+    expect_failure 'An error occurred' env PLUGIN_SLUG=example-extension TRANSLATION_ERROR=true \
+        SLACK_WEBHOOK_URL=https://example.invalid/slack SLACK_CHANNEL="$channel" bash "$tools/update_translations.sh"
+done
+if grep -qFx slack-requested "$RELEASE_LOG"; then
+    echo 'The translation alert was sent without a channel.' >&2
+    exit 1
+fi
 expect_failure 'An error occurred' env PLUGIN_SLUG=example-extension TRANSLATION_ERROR=true \
-    SLACK_WEBHOOK_URL=https://example.invalid/slack bash "$tools/update_translations.sh"
+    SLACK_WEBHOOK_URL=https://example.invalid/slack SLACK_CHANNEL=' #team-releases ' bash "$tools/update_translations.sh"
 test "$(tail -1 "$RELEASE_LOG")" = notified

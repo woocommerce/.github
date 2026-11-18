@@ -7,6 +7,8 @@ name: Cron QIT
 #   qit:
 #     name: QIT
 #     uses: woocommerce/.github/.github/workflows/plugin-cron-qit.yml@<commit SHA>
+#     with:
+#       slack-channel: '#team-ci'
 #     secrets:
 #       ORG_PARTNER_USER: ${{ secrets.ORG_PARTNER_USER }}
 #       ORG_PARTNER_SECRET: ${{ secrets.ORG_PARTNER_SECRET }}
@@ -15,6 +17,10 @@ name: Cron QIT
 on:
   workflow_call:
     inputs:
+      slack-channel:
+        description: Slack destination. Leave blank to skip notifications.
+        type: string
+        required: false
       # Enable the private QIT action from a private WooCommerce repository.
       use-qit-action:
         type: boolean
@@ -25,7 +31,7 @@ on:
         required: false
       ORG_PARTNER_SECRET:
         required: false
-      # Slack notifications; without it the notify steps fail quietly.
+      # Slack webhook for callers that set slack-channel.
       SLACK_WEBHOOK_URL:
         required: false
 
@@ -90,8 +96,9 @@ jobs:
         env:
             SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         steps:
-            - uses: act10ns/slack@d96404edccc6d6467fc7f8134a420c851b1e9054 # v2
+            - uses: $/actions/notify-slack
               with:
+                  slack-channel: ${{ inputs.slack-channel }}
                   status: success
                   message: "Scheduled workflow <{{workflowUrl}}|{{workflow}}> with run ID <{{workflowRunUrl}}|{{runId}}> passed."
 
@@ -105,8 +112,9 @@ jobs:
         env:
             SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         steps:
-            - uses: act10ns/slack@d96404edccc6d6467fc7f8134a420c851b1e9054 # v2
+            - uses: $/actions/notify-slack
               with:
+                  slack-channel: ${{ inputs.slack-channel }}
                   status: cancelled
                   message: "Scheduled workflow <{{workflowUrl}}|{{workflow}}> with run ID <{{workflowRunUrl}}|{{runId}}> cancelled."
 
@@ -120,7 +128,8 @@ jobs:
         env:
             SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         steps:
-            - uses: act10ns/slack@d96404edccc6d6467fc7f8134a420c851b1e9054 # v2
+            - uses: $/actions/notify-slack
               with:
+                  slack-channel: ${{ inputs.slack-channel }}
                   status: failure
                   message: "Scheduled workflow <{{workflowUrl}}|{{workflow}}> with run ID <{{workflowRunUrl}}|{{runId}}> failed. You can find the results in the artifacts section."

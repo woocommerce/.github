@@ -31,10 +31,10 @@ on:
       branch:
         type: string
         required: true
-      # The Slack channel for the outcome, for example `#team-releases`.
       slack-channel:
+        description: Slack destination. Leave blank to skip notifications.
         type: string
-        required: true
+        required: false
     secrets:
       # Private plugin downloads for E2E.
       ORG_DOWNLOADS:
@@ -525,6 +525,7 @@ jobs:
               env:
                 RELEASE_TOOLS: ${{ steps.tools.outputs.directory }}
                 SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+                SLACK_CHANNEL: ${{ inputs.slack-channel }}
               run: bash "$RELEASE_TOOLS/update_translations.sh"
 
     roll-milestone:
@@ -563,11 +564,11 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           RELEASE_VERSION: ${{ needs.check-versions.outputs.release_version }}
         steps:
-          - uses: act10ns/slack@d96404edccc6d6467fc7f8134a420c851b1e9054 # v2
+          - uses: $/actions/notify-slack
             with:
+                slack-channel: ${{ inputs.slack-channel }}
                 status: success
                 message: "<{{{workflowUrl}}}|_{{workflow}}_> with run ID <{{workflowRunUrl}}|{{runId}}> for ${{ github.repository }} *v${{ env.RELEASE_VERSION }}* completed."
-                channel: ${{ inputs.slack-channel }}
 
     handle-cancelled:
         if: ${{ cancelled() && needs.check-versions.outputs.release_version != '' }}
@@ -579,11 +580,11 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           RELEASE_VERSION: ${{ needs.check-versions.outputs.release_version }}
         steps:
-          - uses: act10ns/slack@d96404edccc6d6467fc7f8134a420c851b1e9054 # v2
+          - uses: $/actions/notify-slack
             with:
+                slack-channel: ${{ inputs.slack-channel }}
                 status: cancelled
                 message: "<{{{workflowUrl}}}|_{{workflow}}_> with run ID <{{workflowRunUrl}}|{{runId}}> for ${{ github.repository }} *v${{ env.RELEASE_VERSION }}* cancelled."
-                channel: ${{ inputs.slack-channel }}
 
     handle-error:
         if: ${{ failure() && needs.check-versions.outputs.release_version != '' }}
@@ -595,8 +596,8 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           RELEASE_VERSION: ${{ needs.check-versions.outputs.release_version }}
         steps:
-          - uses: act10ns/slack@d96404edccc6d6467fc7f8134a420c851b1e9054 # v2
+          - uses: $/actions/notify-slack
             with:
+                slack-channel: ${{ inputs.slack-channel }}
                 status: failure
                 message: "<{{{workflowUrl}}}|_{{workflow}}_> with run ID <{{workflowRunUrl}}|{{runId}}> for ${{ github.repository }} *v${{ env.RELEASE_VERSION }}* failed."
-                channel: ${{ inputs.slack-channel }}

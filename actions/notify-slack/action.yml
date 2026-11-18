@@ -1,0 +1,35 @@
+name: Notify Slack
+description: Post the workflow result to the caller's Slack channel when supplied.
+
+inputs:
+  slack-channel:
+    description: Slack destination for this notification.
+    required: true
+  status:
+    description: Workflow result to report.
+    required: true
+  message:
+    description: Message to send to Slack.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Check for an explicit channel
+      id: channel
+      shell: bash
+      env:
+        SLACK_CHANNEL: ${{ inputs.slack-channel }}
+      run: |
+        if [[ "$SLACK_CHANNEL" =~ [^[:space:]] ]]; then
+          printf 'send=true\n' >> "$GITHUB_OUTPUT"
+        else
+          printf '::notice::Slack skipped because slack-channel is blank.\n'
+        fi
+
+    - uses: act10ns/slack@d96404edccc6d6467fc7f8134a420c851b1e9054 # v2
+      if: steps.channel.outputs.send == 'true'
+      with:
+        channel: ${{ inputs.slack-channel }}
+        status: ${{ inputs.status }}
+        message: ${{ inputs.message }}

@@ -15,12 +15,12 @@ name: Release smoke test
 on:
   workflow_call:
     inputs:
-      # The Slack channel for the outcome, for example `#team-releases`.
       slack-channel:
+        description: Slack destination. Leave blank to skip notifications.
         type: string
-        required: true
+        required: false
     secrets:
-      # Slack notifications; without it the notify steps fail quietly.
+      # Slack webhook for callers that set slack-channel.
       SLACK_WEBHOOK_URL:
         required: false
 
@@ -89,11 +89,11 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           RELEASE_VERSION: ${{ needs.check-versions.outputs.release_version }}
         steps:
-          - uses: act10ns/slack@d96404edccc6d6467fc7f8134a420c851b1e9054 # v2
+          - uses: $/actions/notify-slack
             with:
+                slack-channel: ${{ inputs.slack-channel }}
                 status: success
                 message: "<{{{workflowUrl}}}|_{{workflow}}_> for ${{ github.repository }} *v${{ env.RELEASE_VERSION }}* completed."
-                channel: ${{ inputs.slack-channel }}
 
     handle-cancelled:
         if: ${{ cancelled() }}
@@ -106,11 +106,11 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           RELEASE_VERSION: ${{ needs.check-versions.outputs.release_version }}
         steps:
-          - uses: act10ns/slack@d96404edccc6d6467fc7f8134a420c851b1e9054 # v2
+          - uses: $/actions/notify-slack
             with:
+                slack-channel: ${{ inputs.slack-channel }}
                 status: cancelled
                 message: "<{{{workflowUrl}}}|_{{workflow}}_> for ${{ github.repository }} *v${{ env.RELEASE_VERSION }}* cancelled."
-                channel: ${{ inputs.slack-channel }}
 
     handle-error:
         if: ${{ failure() }}
@@ -123,8 +123,8 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           RELEASE_VERSION: ${{ needs.check-versions.outputs.release_version }}
         steps:
-          - uses: act10ns/slack@d96404edccc6d6467fc7f8134a420c851b1e9054 # v2
+          - uses: $/actions/notify-slack
             with:
+                slack-channel: ${{ inputs.slack-channel }}
                 status: failure
                 message: "<{{{workflowUrl}}}|_{{workflow}}_> for ${{ github.repository }} *v${{ env.RELEASE_VERSION }}* failed."
-                channel: ${{ inputs.slack-channel }}

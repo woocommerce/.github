@@ -15,6 +15,7 @@ on:
       - .github/workflows/validate-shared-pr-scripts.yml
       - actions/check-changelog/**
       - actions/check-version/**
+      - actions/notify-slack/**
       - actions/plugin-release-tools/**
       - actions/read-plugin-config/**
       - actions/read-pr-versions/**
@@ -49,6 +50,28 @@ jobs:
           test "$WC_VERSION" = "${wc_expected%__default__}"
       - name: Test the shared validators
         run: bash tests/pr-validation.sh
+      - name: Skip Slack with a blank channel
+        uses: $/actions/notify-slack
+        env:
+          SLACK_WEBHOOK_URL: not-a-webhook-url
+        with:
+          slack-channel: '   '
+          status: success
+          message: This test must skip Slack.
+      - name: Attempt delivery with an explicit channel
+        id: slack-delivery
+        uses: $/actions/notify-slack
+        continue-on-error: true
+        env:
+          SLACK_WEBHOOK_URL: not-a-webhook-url
+        with:
+          slack-channel: '#ci-test'
+          status: success
+          message: This test must attempt delivery.
+      - name: Verify the webhook was attempted
+        env:
+          SLACK_OUTCOME: ${{ steps.slack-delivery.outcome }}
+        run: test "$SLACK_OUTCOME" = failure
       - name: Prepare a release changelog fixture
         run: |
           mkdir -p changelog vendor/bin

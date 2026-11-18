@@ -15,17 +15,24 @@ name: Pull request CI
 #       actions: read
 #       pull-requests: read
 #     uses: woocommerce/.github/.github/workflows/plugin-pr-ci.yml@<commit SHA>
+#     with:
+#       slack-channel: '#team-ci'
 #     secrets:
 #       ORG_DOWNLOADS: ${{ secrets.ORG_DOWNLOADS }}
 #       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
 on:
   workflow_call:
+    inputs:
+      slack-channel:
+        description: Slack destination. Leave blank to skip notifications.
+        type: string
+        required: false
     secrets:
       # Private plugin downloads (PHPStan stubs, PHPUnit, E2E). Fork pull requests never receive it.
       ORG_DOWNLOADS:
         required: false
-      # Slack notifications; without it the notify steps fail quietly.
+      # Slack webhook for callers that set slack-channel.
       SLACK_WEBHOOK_URL:
         required: false
 
@@ -284,8 +291,9 @@ jobs:
         CI_STATUS: ${{ needs.results.result }}
       steps:
         # A Slack outage or revoked webhook must not fail the run that `Required checks` reads.
-        - uses: act10ns/slack@d96404edccc6d6467fc7f8134a420c851b1e9054 # v2
+        - uses: $/actions/notify-slack
           continue-on-error: true
           with:
+            slack-channel: ${{ inputs.slack-channel }}
             status: ${{ env.CI_STATUS }}
             message: "Workflow <{{workflowUrl}}|{{workflow}}> with run ID <{{workflowRunUrl}}|{{runId}}> in PR <{{refUrl}}|{{ref}}> finished with status: ${{ env.CI_STATUS }}."

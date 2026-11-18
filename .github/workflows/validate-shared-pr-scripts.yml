@@ -3,6 +3,7 @@ name: Validate shared PR scripts
 on:
   pull_request:
     paths:
+      - composer.json
       - .github/workflows/plugin-pr-ci.yml
       - .github/workflows/plugin-build-zip.yml
       - .github/workflows/plugin-js-lint.yml

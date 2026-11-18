@@ -27,6 +27,30 @@ The preview workflow verifies the production ZIP and renders `tests/playground/c
 
 Public repositories can pass `playground-files` to package the listed PHP fixtures alongside the ZIP. Put the browser blueprint in `tests/playground/blueprint-browser.json` with `__ARTIFACT_URL__` as the `unzip` step's `zipFile.url` and use `$PLAYGROUND_URL` in the comment. The proxy link includes the workflow name, so keep the caller named `Test the build`.
 
+## Local changelog and version checks
+
+The shared changelog and PHP `@version` scripts are also Composer binaries in `woocommerce/extension-checks`. Tag the reviewed commit after merging a validator release. Use that commit SHA for the plugin's action pins, and use the exact tag version in the plugin's Composer manifest. For example, a `v1.0.0` tag uses this configuration.
+
+```json
+{
+    "repositories": [
+        {
+            "type": "vcs",
+            "url": "https://github.com/woocommerce/.github",
+            "only": ["woocommerce/extension-checks"]
+        }
+    ],
+    "require-dev": {
+        "woocommerce/extension-checks": "1.0.0"
+    }
+}
+```
+
+Commit `composer.lock` and verify that the package's source reference matches the validator action pins. After `composer install`, both commands run offline.
+
+- Run `vendor/bin/check_changelog.sh` from the plugin root. It uses the plugin's `package.json` to identify the root and the plugin's `automattic/jetpack-changelogger` development dependency to validate changes.
+- Run `vendor/bin/version_updated.sh <file>...` with the changed PHP files, as lint-staged does. This also works in Composer-only jobs. The local command skips the version check on `trunk`.
+
 ## Credentials and caches
 
 External review runs on the base workflow and uses its explicit review credential. Fork PRs cannot use same-repository private-plugin coverage. Check which suites need a same-repo branch before merging. Release credentials belong in the steps that use them. Release jobs load their scripts from the pinned shared workflow revision. Candidate checkouts supply versions, change entries, and the tested ZIP. Both Marketplace submission and confirmation use the same product ID from the reviewed trunk config. Explicit release-candidate refs bypass dependency caches where the callers disable caching.

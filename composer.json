@@ -1,0 +1,13 @@
+{
+    "name": "woocommerce/extension-checks",
+    "description": "Changelog and PHP version-tag checks used by WooCommerce extensions",
+    "type": "library",
+    "license": "GPL-3.0-or-later",
+    "bin": [
+        "actions/check-changelog/check_changelog.sh",
+        "actions/check-version/version_updated.sh"
+    ],
+    "suggest": {
+        "automattic/jetpack-changelogger": "Validates the changelog fragments in the consuming extension"
+    }
+}

@@ -218,26 +218,47 @@ jobs:
           partner-user: ${{ secrets.ORG_PARTNER_USER }}
           partner-secret: ${{ secrets.ORG_PARTNER_SECRET }}
 
-      - name: Summarize QIT results
-        if: ${{ !cancelled() && steps.qit.outputs.results-file != '' }}
-        env:
-          QIT_RESULTS_FILE: ${{ steps.qit.outputs.results-file }}
-        run: |
-          {
-            echo '| QIT check | Result | ID | WordPress | WooCommerce | PHP |'
-            echo '| --- | --- | --- | --- | --- | --- |'
-            jq -r '.test_runs[] |
-              [.test_type, .status, .test_run_id, .wordpress_version, .woocommerce_version, .php_version] |
-              map(. // "-" | tostring | gsub("[\r\n|]"; " ")) |
-              "| " + join(" | ") + " |"' "$QIT_RESULTS_FILE"
-          } >> "$GITHUB_STEP_SUMMARY"
-
       - name: Upload results
+        id: upload-results
         if: ${{ !cancelled() && steps.qit.outputs.results-file != '' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: qit-results
           path: ${{ steps.qit.outputs.results-file }}
+
+      - name: Summarize QIT results
+        if: ${{ !cancelled() && steps.qit.outputs.results-file != '' }}
+        env:
+          QIT_RESULTS_FILE: ${{ steps.qit.outputs.results-file }}
+          QIT_ARTIFACT_URL: ${{ steps.upload-results.outputs.artifact-url }}
+        run: |
+          {
+            echo '| QIT check | Result | ID | WordPress | WooCommerce | PHP | Details |'
+            echo '| --- | --- | --- | --- | --- | --- | --- |'
+            jq -r '
+              def json_object:
+                (if type == "string" then (try fromjson catch {}) else . end) | objects;
+              def cell:
+                . // "-" | tostring | gsub("https?://[^[:space:]]+"; "[URL]") | @html |
+                gsub("[\r\n]"; " ") | gsub("\\|"; "&#124;");
+              def details:
+                [
+                  (select(.status != "success") | .test_summary // empty),
+                  (.ctrf_json | json_object | .results | json_object | .tests[]? | objects |
+                    select(.status == "failed") | [.suite, .name] | map(. // empty) | join(" › ")),
+                  (.test_result_json | json_object | .findings[]? | objects |
+                    select(.suppressed != true) | . as $finding |
+                    ([.method, .route] | map(. // empty) | join(" ")) + " › " +
+                    ($finding.error_message // ("HTTP " + ($finding.response_status | tostring))))
+                ] | map(select(. != "") | cell) | if length > 0 then join("<br>") else "-" end;
+              .test_runs[] | . as $run |
+              [.test_type, .status, .test_run_id, .wordpress_version, .woocommerce_version, .php_version] |
+              map(cell) + [($run | details)] |
+              "| " + join(" | ") + " |"' "$QIT_RESULTS_FILE"
+            if [[ -n "$QIT_ARTIFACT_URL" ]]; then
+              printf '\n[Download QIT results for attempt %s](%s)\n' "$GITHUB_RUN_ATTEMPT" "$QIT_ARTIFACT_URL"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
   qit-tests:
         if: ${{ !inputs.use-qit-action || !inputs.wait || inputs.options != '' }}
@@ -607,8 +628,7 @@ jobs:
           - name: Echo API fuzz results
             if: ${{ !cancelled() && inputs.test-api-fuzz == 'true' && steps.run-api-fuzz-test.outputs.exitcode != '' }}
             run: |
-              cat ${{ github.workspace }}/qit-results/qit-api-fuzz-results.txt
-              exit ${{ steps.run-api-fuzz-test.outputs.exitcode || '1' }}
+              cat "$GITHUB_WORKSPACE/qit-results/qit-api-fuzz-results.txt"
 
           # Keep each run's server-side record (named failed tests, resolved WP/WC/PHP);
           # the hosted report expires after 7 days. Public repos drop the signed report URLs.
@@ -631,19 +651,61 @@ jobs:
                 printf '%s\n' "$record" > "$check.record.json"
               done
 
+          - name: Upload results
+            id: upload-results
+            if: always()
+            uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+            with:
+                name: qit-results
+                path: ${{ github.workspace }}/qit-results/
+
           - name: Summarize QIT results
             if: ${{ always() }}
             env:
               QIT_INPUTS: ${{ toJSON(inputs) }}
               QIT_STEPS: ${{ toJSON(steps) }}
+              QIT_ARTIFACT_URL: ${{ steps.upload-results.outputs.artifact-url }}
             run: |
               python3 - <<'PYTHON'
               import glob
               import json
               import os
+              import re
+              from html import escape
+
+              def json_object(value):
+                  if isinstance(value, str):
+                      try:
+                          value = json.loads(value)
+                      except ValueError:
+                          return {}
+                  return value if isinstance(value, dict) else {}
+
+              def detail_cell(value):
+                  text = re.sub(r'https?://\S+', '[URL]', str(value))
+                  return escape(' '.join(text.split())).replace('|', '&#124;')
+
+              def record_entries(value):
+                  return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
 
               inputs = json.loads(os.environ['QIT_INPUTS'])
               steps = json.loads(os.environ['QIT_STEPS'])
+              results_dir = os.path.join(os.environ['GITHUB_WORKSPACE'], 'qit-results')
+              # Exit 3 is also used for warnings with findings. Only the saved record can waive it.
+              fuzz_not_applicable = False
+              if steps.get('run-api-fuzz-test', {}).get('outputs', {}).get('exitcode') == '3':
+                  try:
+                      with open(os.path.join(results_dir, 'api-fuzz.record.json')) as f:
+                          fuzz_record = json_object(json.load(f))
+                      campaign = json_object(fuzz_record.get('test_result_json')).get('campaign')
+                      fuzz_not_applicable = (
+                          fuzz_record.get('test_type') == 'api-fuzz'
+                          and fuzz_record.get('status') == 'warning'
+                          and isinstance(campaign, dict)
+                          and campaign.get('state') == 'not_applicable'
+                      )
+                  except (OSError, ValueError):
+                      pass
               async_managed = not inputs['wait']
               # Extra options follow the generated flag in the managed commands.
               for option in inputs['options'].split():
@@ -681,41 +743,42 @@ jobs:
                               failed = True
                       elif code == '0':
                           result = 'submitted' if async_managed and check not in synchronous else 'passed'
+                      elif check == 'api-fuzz' and code == '3' and fuzz_not_applicable:
+                          result = 'skipped (not applicable)'
                       else:
                           result = 'failed (exit ' + code + ')'
                           failed = True
                       summary.write('| ' + check + ' | ' + result + ' |\n')
-                  records = sorted(glob.glob(os.path.join(os.environ['GITHUB_WORKSPACE'], 'qit-results', '*.record.json')))
+                  records = sorted(glob.glob(os.path.join(results_dir, '*.record.json')))
                   if records:
-                      summary.write('\n| QIT record | ID | Status | WordPress | WooCommerce | PHP | Failed tests |\n| --- | --- | --- | --- | --- | --- | --- |\n')
+                      summary.write('\n| QIT record | ID | Status | WordPress | WooCommerce | PHP | Details |\n| --- | --- | --- | --- | --- | --- | --- |\n')
                   for path in records:
                       try:
                           with open(path) as f:
                               record = json.load(f)
                           cells = [str(record[key]) for key in ('test_run_id', 'status', 'wordpress_version', 'woocommerce_version', 'php_version')]
                       except Exception:
-                          # An unreadable record must not change the QIT verdict.
                           record, cells = {}, ['record unavailable', '', '', '', '']
-                      try:
-                          ctrf = record.get('ctrf_json') or {}
-                          tests = ctrf['results']['tests'] if ctrf else []
-                          names = [t.get('suite', '') + ' › ' + t.get('name', '') for t in tests if t.get('status') == 'failed']
-                          # API fuzz findings are not tests; list each one as its request and error.
-                          # Other checks (e.g. malware) store a list here, so only read a mapping.
-                          result = record.get('test_result_json')
-                          findings = (result.get('findings') or []) if isinstance(result, dict) else []
-                          names += [f.get('method', '') + ' ' + f.get('route', '') + ' › ' + str(f.get('error_message') or 'HTTP ' + str(f.get('response_status', ''))).replace('\n', ' ') for f in findings if not f.get('suppressed')]
-                      except Exception:
-                          # A malformed CTRF report only blanks the failed-test column.
-                          names = ['failed-test list unavailable']
-                      failed_tests = '<br>'.join(names).replace('|', '\\|') or '-'
-                      summary.write('| ' + ' | '.join([os.path.basename(path)[:-len('.record.json')]] + cells + [failed_tests]) + ' |\n')
+                      names = []
+                      if record.get('status') != 'success' and record.get('test_summary'):
+                          names.append(record['test_summary'])
+                      ctrf = json_object(record.get('ctrf_json'))
+                      tests = record_entries(json_object(ctrf.get('results')).get('tests'))
+                      for test in tests:
+                          if test.get('status') == 'failed':
+                              names.append(f"{test.get('suite') or ''} › {test.get('name') or ''}")
+                      # API fuzz findings include the request and error.
+                      result = json_object(record.get('test_result_json'))
+                      for finding in record_entries(result.get('findings')):
+                          if not finding.get('suppressed'):
+                              request = f"{finding.get('method') or ''} {finding.get('route') or ''}".strip()
+                              reason = finding.get('error_message') or f"HTTP {finding.get('response_status', '')}"
+                              names.append(f"{request} › {reason}")
+                      details = '<br>'.join(detail_cell(name) for name in names) or '-'
+                      summary.write('| ' + ' | '.join([os.path.basename(path)[:-len('.record.json')]] + cells + [details]) + ' |\n')
+                  artifact_url = os.environ['QIT_ARTIFACT_URL']
+                  if artifact_url:
+                      attempt = os.environ['GITHUB_RUN_ATTEMPT']
+                      summary.write(f'\n[Download QIT results for attempt {attempt}]({artifact_url})\n')
               raise SystemExit(1 if failed else 0)
               PYTHON
-
-          - name: Upload results
-            if: always()
-            uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-            with:
-                name: qit-results
-                path: ${{ github.workspace }}/qit-results/

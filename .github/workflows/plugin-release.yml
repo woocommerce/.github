@@ -373,7 +373,7 @@ jobs:
         name: Confirm deployment
         needs: [submit-deployment, release, check-versions]
         runs-on: ubuntu-latest
-        timeout-minutes: 70
+        timeout-minutes: 90
         env:
           PRODUCT_ID: ${{ fromJSON(needs.check-versions.outputs.config).release.productId }}
           RELEASE_VERSION: ${{ needs.release.outputs.version }}

@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - composer.json
+      - README.md
       - .github/workflows/plugin-pr-ci.yml
       - .github/workflows/plugin-build-zip.yml
       - .github/workflows/plugin-js-lint.yml

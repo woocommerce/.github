@@ -1006,8 +1006,11 @@ jobs:
           fi
 
       - name: Alert Slack on missed or failed review
-        # Fires only when the job failed and the caller forwarded a webhook.
-        if: ${{ failure() && env.HAS_SLACK_WEBHOOK == 'true' }}
+        # Woo repos without the v1 credential cannot review until they migrate.
+        # Keep the failed GitHub check, but don't page Slack for those repos.
+        if: ${{ failure() && env.HAS_SLACK_WEBHOOK == 'true' && (github.repository_owner != 'woocommerce' || env.HAS_ANTHROPIC_API_KEY == 'true') }}
+        env:
+          HAS_ANTHROPIC_API_KEY: ${{ secrets.AI_CODE_REVIEW_ANTHROPIC_API_KEY != '' }}
         uses: slackapi/slack-github-action@485a9d42d3a73031f12ec201c457e2162c45d02d # v2.0.0
         with:
           webhook: ${{ secrets.AI_REVIEW_SLACK_WEBHOOK_URL }}

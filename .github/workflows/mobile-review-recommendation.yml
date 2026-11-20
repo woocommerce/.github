@@ -48,7 +48,8 @@ jobs:
           persist-credentials: false
 
       # The guidelines come from this repository, never from the PR checkout, so a PR can't edit the rules it is judged
-      # against. Callers pin this workflow to trunk, so the guidelines are checked out from trunk too.
+      # against. They are always read from trunk, even when a caller pins this workflow to a SHA, so guideline changes
+      # apply to every caller as soon as they merge.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: woocommerce/.github

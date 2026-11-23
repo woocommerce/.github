@@ -216,7 +216,9 @@ jobs:
         uses: ./.github/workflows/plugin-build-zip.yml
         with:
           checkout-ref: ${{ needs.check-versions.outputs.commit }}
-          artifact-name: release-candidate-${{ github.run_attempt }}
+          # Central mode names the artifact after the commit it built, so the central workflow can tie the
+          # released ZIP to the approved PR head.
+          artifact-name: ${{ inputs.deploy == 'central' && format('release-candidate-{0}-{1}', needs.check-versions.outputs.commit, github.run_attempt) || format('release-candidate-{0}', github.run_attempt) }}
 
     e2e-tests:
         if: ${{ fromJSON(needs.check-versions.outputs.config).capabilities.e2e }}

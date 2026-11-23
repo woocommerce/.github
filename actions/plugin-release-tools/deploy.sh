@@ -23,8 +23,8 @@ published_version() {
 
 if [[ "$mode" == confirm ]]; then
   # Allow time for the marketplace to finish deployment and refresh its update data.
-  # Keep fleet releases within the shared product-info request limit.
-  deadline=$((SECONDS + 4800))
+  # Keep fleet releases within the shared product-info request limit. WCCOM_CONFIRM_SECONDS=0 checks once.
+  deadline=$((SECONDS + ${WCCOM_CONFIRM_SECONDS:-4800}))
   while :; do
     if version=$(published_version) && [[ "$version" == "$RELEASE_VERSION" ]]; then
       echo "WooCommerce.com is offering version ${RELEASE_VERSION}."

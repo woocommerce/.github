@@ -200,6 +200,10 @@ CONFIRM_POLLS="$fixture/polls" PUBLISH_ON_POLL=17 BASH_ENV="$fixture/advance-clo
 expect_failure 'has not confirmed' env CONFIRM_POLLS="$fixture/polls" BASH_ENV="$fixture/advance-clock" \
     bash "$tools/deploy.sh" confirm
 [[ $(wc -l < "$fixture/polls") -eq 17 ]]
+: > "$fixture/polls"
+expect_failure 'has not confirmed' env CONFIRM_POLLS="$fixture/polls" BASH_ENV="$fixture/advance-clock" \
+    WCCOM_CONFIRM_SECONDS=0 bash "$tools/deploy.sh" confirm
+[[ $(wc -l < "$fixture/polls") -eq 1 ]]
 
 # A real local SVN tag exercises retry verification without any deploy credentials.
 export WPORG_SVN_URL="file://$fixture/svn"

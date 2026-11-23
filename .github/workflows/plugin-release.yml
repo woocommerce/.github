@@ -254,7 +254,9 @@ jobs:
     release:
         # Every check the plugin has must pass; checks it does not have are skipped.
         if: ${{ !failure() && !cancelled() && needs.build_project.result == 'success' }}
-        name: Release
+        # In central mode the name records the released commit and SHA-256. This job runs no plugin
+        # code, so the central workflow can rely on it.
+        name: ${{ inputs.deploy == 'central' && format('Release ({0} {1})', needs.check-versions.outputs.commit, needs.build_project.outputs.sha256) || 'Release' }}
         needs: [ check-release-archive, e2e-tests, build_project, check-versions ]
         runs-on: ubuntu-latest
         timeout-minutes: 5

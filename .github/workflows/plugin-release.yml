@@ -23,6 +23,11 @@ name: Publish release
 #     secrets:
 #       RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
 #       ...
+#
+# With `deploy: central`, the run stops after creating the GitHub release. The central release
+# workflow deploys that archive, merges the release pull request and closes the milestone, so the
+# caller forwards no secrets beyond ORG_DOWNLOADS for E2E. Forwarding RELEASE_TOKEN or a deploy
+# secret fails the run.
 
 on:
   workflow_call:
@@ -31,6 +36,10 @@ on:
       branch:
         type: string
         required: true
+      # Who deploys and merges: 'plugin' (this run, with the deploy secrets) or 'central'.
+      deploy:
+        type: string
+        default: plugin
       slack-channel:
         description: Slack destination. Leave blank to skip notifications.
         type: string
@@ -52,8 +61,9 @@ on:
       WPORG_PASSWORD:
         required: false
       # A token that can merge the release pull request (the default token cannot trigger workflows).
+      # Required when deploy is 'plugin'.
       RELEASE_TOKEN:
-        required: true
+        required: false
       SLACK_WEBHOOK_URL:
         required: false
 
@@ -86,7 +96,22 @@ jobs:
               env:
                 GH_TOKEN: ${{ github.token }}
                 RELEASE_BRANCH: ${{ inputs.branch }}
+                DEPLOY: ${{ inputs.deploy }}
+                HAS_RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN != '' }}
+                HAS_DEPLOY_SECRETS: ${{ secrets.RELEASE_TOKEN != '' || secrets.ORG_PARTNER_USER != '' || secrets.ORG_PARTNER_DEPLOY_SECRET != '' || secrets.ORG_DEPLOY_SECRET != '' || secrets.WPORG_USERNAME != '' || secrets.WPORG_PASSWORD != '' }}
               run: |
+                if [[ "$DEPLOY" != plugin && "$DEPLOY" != central ]]; then
+                  echo "::error::Invalid deploy '$DEPLOY'. Expected 'plugin' or 'central'."
+                  exit 1
+                fi
+                if [[ "$DEPLOY" == plugin && "$HAS_RELEASE_TOKEN" != true ]]; then
+                  echo "::error::RELEASE_TOKEN is required when deploy is 'plugin'."
+                  exit 1
+                fi
+                if [[ "$DEPLOY" == central && "$HAS_DEPLOY_SECRETS" == true ]]; then
+                  echo "::error::With deploy 'central', don't forward RELEASE_TOKEN or deploy secrets."
+                  exit 1
+                fi
                 if [[ "$GITHUB_REF" != refs/heads/trunk || ! "$RELEASE_BRANCH" =~ ^release/[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
                   echo "::error::Run this workflow from trunk with a release/X.Y.Z branch."
                   exit 1
@@ -295,9 +320,14 @@ jobs:
                 RELEASE_TOOLS: ${{ steps.tools.outputs.directory }}
               run: bash "$RELEASE_TOOLS/release.sh"
 
+            - name: Hand over to the central release workflow
+              if: inputs.deploy == 'central'
+              run: |
+                echo "Released \`${RELEASE_ARCHIVE}\` for ${RELEASE_VERSION} (SHA-256 \`${CANDIDATE_SHA256}\`). The central release workflow deploys it, merges the release PR and closes the milestone." >> "$GITHUB_STEP_SUMMARY"
+
     # config.woo.release.target "woocommerce.com": submit the released archive to the marketplace.
     submit-deployment:
-        if: ${{ fromJSON(needs.check-versions.outputs.config).release.target == 'woocommerce.com' }}
+        if: ${{ inputs.deploy == 'plugin' && fromJSON(needs.check-versions.outputs.config).release.target == 'woocommerce.com' }}
         name: Submit to WooCommerce.com
         needs: [release, check-versions]
         runs-on: ubuntu-latest
@@ -391,7 +421,7 @@ jobs:
     # is set. Without it, the job finishes after the artifact checks and the release ends at the
     # GitHub release created above.
     deploy-wporg:
-        if: ${{ fromJSON(needs.check-versions.outputs.config).release.target == 'wordpress.org' }}
+        if: ${{ inputs.deploy == 'plugin' && fromJSON(needs.check-versions.outputs.config).release.target == 'wordpress.org' }}
         name: Deploy to WordPress.org
         needs: [ release, check-versions, build_project ]
         runs-on: ubuntu-latest
@@ -571,7 +601,7 @@ jobs:
                 message: "<{{{workflowUrl}}}|_{{workflow}}_> with run ID <{{workflowRunUrl}}|{{runId}}> for ${{ github.repository }} *v${{ env.RELEASE_VERSION }}* completed."
 
     handle-cancelled:
-        if: ${{ cancelled() && needs.check-versions.outputs.release_version != '' }}
+        if: ${{ cancelled() && inputs.deploy == 'plugin' && needs.check-versions.outputs.release_version != '' }}
         needs: [ deploy, deploy-wporg, merge-release, check-versions ]
         name: Handle cancellation
         runs-on: ubuntu-latest
@@ -587,7 +617,7 @@ jobs:
                 message: "<{{{workflowUrl}}}|_{{workflow}}_> with run ID <{{workflowRunUrl}}|{{runId}}> for ${{ github.repository }} *v${{ env.RELEASE_VERSION }}* cancelled."
 
     handle-error:
-        if: ${{ failure() && needs.check-versions.outputs.release_version != '' }}
+        if: ${{ failure() && inputs.deploy == 'plugin' && needs.check-versions.outputs.release_version != '' }}
         needs: [ deploy, deploy-wporg, merge-release, check-versions ]
         name: Handle failure
         runs-on: ubuntu-latest

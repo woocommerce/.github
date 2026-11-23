@@ -13,6 +13,11 @@ name: Start Release
 #       wc_version: ${{ inputs.wc_version }}
 #     secrets:
 #       RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+#
+# With `deploy: central`, the run needs no secrets and pushes nothing. It bumps the versions and
+# compiles the changelog on the dispatched trunk commit, then uploads them as a
+# release-patch-<run attempt> artifact. The central release workflow, which holds the release
+# credentials, checks that run and opens the branch, PR and next milestone.
 
 on:
   workflow_call:
@@ -28,11 +33,16 @@ on:
       wc_version:
         type: string
         default: ''
+      # Who pushes the release branch: 'plugin' (this run, with RELEASE_TOKEN) or 'central'.
+      deploy:
+        type: string
+        default: plugin
     secrets:
-      # Must be a personal access token: pushes and pull requests made with the default token do not
-      # trigger other workflows, so the release smoke test would never run.
+      # Required when deploy is 'plugin'. Must be a personal access token: pushes and pull requests
+      # made with the default token do not trigger other workflows, so the release smoke test would
+      # never run.
       RELEASE_TOKEN:
-        required: true
+        required: false
 
 permissions:
   contents: read
@@ -40,24 +50,50 @@ permissions:
 jobs:
 
     start-release:
-        name: Create release branch and PR
+        name: ${{ inputs.deploy == 'central' && 'Prepare release patch' || 'Create release branch and PR' }}
         runs-on: ubuntu-latest
         timeout-minutes: 5
         env:
           VERSION: ${{ inputs.version }}
           WP_VERSION: ${{ inputs.wp_version }}
           WC_VERSION: ${{ inputs.wc_version }}
+          DEPLOY: ${{ inputs.deploy }}
 
         steps:
 
+            # Central mode builds on the dispatched commit, so the patch base is the run's head_sha.
             - name: Checkout trunk
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
-                ref: trunk
+                ref: ${{ inputs.deploy == 'central' && github.sha || 'trunk' }}
                 persist-credentials: false
 
             - name: Validate inputs
+              env:
+                HAS_RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN != '' }}
               run: |
+                case "$DEPLOY" in
+                  plugin)
+                    if [[ "$HAS_RELEASE_TOKEN" != true ]]; then
+                      echo "::error::RELEASE_TOKEN is required when deploy is 'plugin'."
+                      exit 1
+                    fi
+                    ;;
+                  central)
+                    if [[ "$HAS_RELEASE_TOKEN" == true ]]; then
+                      echo "::error::With deploy 'central', don't forward RELEASE_TOKEN."
+                      exit 1
+                    fi
+                    if [[ "$GITHUB_REF" != refs/heads/trunk ]]; then
+                      echo "::error::Run Start Release from trunk."
+                      exit 1
+                    fi
+                    ;;
+                  *)
+                    echo "::error::Invalid deploy '$DEPLOY'. Expected 'plugin' or 'central'."
+                    exit 1
+                    ;;
+                esac
                 if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
                   echo "::error::Invalid version format '$VERSION'. Expected X.Y.Z."
                   exit 1
@@ -76,20 +112,23 @@ jobs:
                 GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
                 GIT_TERMINAL_PROMPT: 0
               run: |
-                OPEN_RELEASE_PRS=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls?state=open&base=trunk&per_page=100" \
-                  --jq '.[] | select(.head.repo.full_name == .base.repo.full_name and (.head.ref | startswith("release/"))) | .number')
-                if [[ -n "$OPEN_RELEASE_PRS" ]]; then
-                  echo "::error::Finish or close the existing release PR before cutting another release."
-                  echo "If Start Release failed after opening the PR, see the summary of that failed attempt for recovery steps."
-                  exit 1
-                fi
+                # In central mode, the central release workflow runs these checks with its own token.
+                if [[ "$DEPLOY" == plugin ]]; then
+                  OPEN_RELEASE_PRS=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls?state=open&base=trunk&per_page=100" \
+                    --jq '.[] | select(.head.repo.full_name == .base.repo.full_name and (.head.ref | startswith("release/"))) | .number')
+                  if [[ -n "$OPEN_RELEASE_PRS" ]]; then
+                    echo "::error::Finish or close the existing release PR before cutting another release."
+                    echo "If Start Release failed after opening the PR, see the summary of that failed attempt for recovery steps."
+                    exit 1
+                  fi
 
-                RELEASE_REF=$(git -c credential.helper= -c 'credential.helper=!gh auth git-credential' \
-                  ls-remote --heads origin "refs/heads/release/${VERSION}")
-                if [[ -n "$RELEASE_REF" ]]; then
-                  echo "::error::Branch release/${VERSION} already exists."
-                  echo "If Start Release failed after pushing the branch, see the summary of that failed attempt for recovery steps."
-                  exit 1
+                  RELEASE_REF=$(git -c credential.helper= -c 'credential.helper=!gh auth git-credential' \
+                    ls-remote --heads origin "refs/heads/release/${VERSION}")
+                  if [[ -n "$RELEASE_REF" ]]; then
+                    echo "::error::Branch release/${VERSION} already exists."
+                    echo "If Start Release failed after pushing the branch, see the summary of that failed attempt for recovery steps."
+                    exit 1
+                  fi
                 fi
 
                 # Ignore dotfiles: changelog/.gitkeep keeps the directory in git.
@@ -101,6 +140,7 @@ jobs:
                 echo "Found ${CHANGE_FILES} change file(s) to compile."
 
             - name: Find GitHub milestone
+              if: inputs.deploy == 'plugin'
               id: milestone
               env:
                 GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
@@ -166,6 +206,7 @@ jobs:
               run: bash "$RELEASE_TOOLS/sync_readme_changelog.sh" "$VERSION"
 
             - name: Open the next release milestone
+              if: inputs.deploy == 'plugin'
               env:
                 GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
               run: |
@@ -184,7 +225,54 @@ jobs:
                 git add -u
                 git commit -m "Bump version to ${VERSION}"
 
+            - name: Prepare the release patch
+              if: inputs.deploy == 'central'
+              id: patch
+              run: |
+                set -o pipefail
+                BASE_SHA=$(git rev-parse HEAD~1)
+                if [[ "$BASE_SHA" != "$GITHUB_SHA" ]]; then
+                  echo "::error::The release commit must sit on the dispatched commit $GITHUB_SHA."
+                  exit 1
+                fi
+                CHANGELOG=$(git show HEAD:changelog.txt | awk -v heading="= ${VERSION} - " 'index($0, heading) == 1 && !found {found=1; next} found && /^= /{done=1} found && !done')
+                if [[ -z "$CHANGELOG" ]]; then
+                  echo "::error::changelog.txt has no entries under '= ${VERSION} - '."
+                  exit 1
+                fi
+
+                PATCH_DIR=$(mktemp -d "$RUNNER_TEMP/release-patch.XXXXXX")
+                echo "dir=$PATCH_DIR" >> "$GITHUB_OUTPUT"
+                git diff --binary --full-index --no-ext-diff --no-textconv --no-renames --no-color \
+                  "$BASE_SHA" HEAD > "$PATCH_DIR/release.patch"
+                jq -n \
+                  --arg version "$VERSION" \
+                  --arg base_sha "$BASE_SHA" \
+                  --arg wp_version "$WP_VERSION" \
+                  --arg wc_version "$WC_VERSION" \
+                  --arg changelog "$CHANGELOG" \
+                  '{version: $version, base_sha: $base_sha, wp_version: $wp_version, wc_version: $wc_version, changelog: $changelog}' \
+                  > "$PATCH_DIR/release.json"
+
+                {
+                  echo "Prepared the ${VERSION} release patch on \`${BASE_SHA}\`. The central release workflow opens the release PR."
+                  echo ""
+                  git diff --stat "$BASE_SHA" HEAD | sed 's/^/    /'
+                } >> "$GITHUB_STEP_SUMMARY"
+
+            - name: Upload the release patch
+              if: inputs.deploy == 'central'
+              uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+              with:
+                name: release-patch-${{ github.run_attempt }}
+                path: |
+                  ${{ steps.patch.outputs.dir }}/release.patch
+                  ${{ steps.patch.outputs.dir }}/release.json
+                if-no-files-found: error
+                retention-days: 3
+
             - name: Prepare the changelog comparison and recovery instructions
+              if: inputs.deploy == 'plugin'
               env:
                 GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
                 MILESTONE_NUMBER: ${{ steps.milestone.outputs.number }}
@@ -224,6 +312,7 @@ jobs:
                 } >> "$GITHUB_STEP_SUMMARY"
 
             - name: Push release branch
+              if: inputs.deploy == 'plugin'
               env:
                 GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
                 GIT_TERMINAL_PROMPT: 0
@@ -232,6 +321,7 @@ jobs:
                   push origin "release/${VERSION}"
 
             - name: Create release PR
+              if: inputs.deploy == 'plugin'
               id: pr
               env:
                 GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
@@ -246,6 +336,7 @@ jobs:
                 echo "Release PR: $PR_URL"
 
             - name: Post changelog vs milestone comparison
+              if: inputs.deploy == 'plugin'
               env:
                 GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
                 PR_URL: ${{ steps.pr.outputs.url }}
@@ -253,6 +344,7 @@ jobs:
                 gh pr comment "$PR_URL" --body-file "$RUNNER_TEMP/release-comparison.md"
 
             - name: Summary
+              if: inputs.deploy == 'plugin'
               run: |
                 echo "Release PR created: ${{ steps.pr.outputs.url }}" >> $GITHUB_STEP_SUMMARY
                 echo "" >> $GITHUB_STEP_SUMMARY

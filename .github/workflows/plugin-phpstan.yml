@@ -43,7 +43,8 @@ jobs:
           if [[ -n "$ORG_DOWNLOADS" ]]; then
             export COMPOSER_AUTH="{\"github-oauth\":{\"github.com\":\"$ORG_DOWNLOADS\"}}"
           fi
-          composer install --prefer-dist --no-scripts --no-progress --no-interaction --working-dir=tools/php-stubs
+          # No scripts or Composer plugins: no dependency code runs while the token is set.
+          composer install --prefer-dist --no-scripts --no-plugins --no-progress --no-interaction --working-dir=tools/php-stubs
       - run: composer install --prefer-dist --no-progress --no-interaction
       - name: Check stub pins against the declared minimums
         if: hashFiles('tools/php-stubs/vendor/woocommerce/php-stubs/check-pins.php') != ''

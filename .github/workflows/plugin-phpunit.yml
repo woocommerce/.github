@@ -130,60 +130,12 @@ jobs:
       # Before checkout, so the token never reaches a step that runs repository code.
       - name: Download private plugins
         if: ${{ inputs.trusted-plugins && toJSON(fromJSON(needs.config.outputs.json).privatePlugins) != '[]' }}
-        env:
-          GH_TOKEN: ${{ secrets.ORG_DOWNLOADS }}
-          SUITE: ${{ inputs.suite }}
-          PLUGINS: ${{ toJSON(fromJSON(needs.config.outputs.json).privatePlugins) }}
-        run: |
-          plugins_dir="$RUNNER_TEMP/plugins"
-          mkdir -p "$plugins_dir" "$RUNNER_TEMP/plugin-zips"
-          echo "WOO_PRIVATE_PLUGINS_DIR=$plugins_dir" >> "$GITHUB_ENV"
-          while IFS= read -r plugin; do
-            slug=$(jq -er '.slug | select(test("^[a-z0-9]+(-[a-z0-9]+)*$"))' <<< "$plugin")
-            zip="$RUNNER_TEMP/plugin-zips/$slug.zip"
-            # The leg's release of this plugin: empty for the latest, a tag, or `<x.y.z` for the
-            # newest release older than x.y.z (config.woo.phpunit.legs[].plugins).
-            version=$(jq -r --arg slug "$slug" '.pluginVersions[$slug] // ""' <<< "$LEG")
-            source=$(jq -r .source <<< "$plugin")
-            if [[ -n "$version" && "$source" != release ]]; then
-              echo "::error::$slug: a leg can pin only release plugins."
-              exit 1
-            fi
-            if [[ "$version" == '<'* ]]; then
-              minimum=${version#<}
-              version=$(gh release list --repo "woocommerce/$slug" --limit 100 --json tagName --jq '.[].tagName' |
-                grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | { cat; echo "$minimum"; } | sort -V -u |
-                awk -v minimum="$minimum" '$0 == minimum { print previous; exit } { previous = $0 }')
-              [[ -n "$version" ]] || { echo "::error::Found no $slug release older than $minimum."; exit 1; }
-            fi
-            [[ -z "$version" || "$version" =~ ^[0-9A-Za-z][0-9A-Za-z.+-]*$ ]] || { echo "::error::Invalid $slug release '$version'."; exit 1; }
-            case $source in
-              release)
-                gh release download ${version:+"$version"} --repo "woocommerce/$slug" --pattern "$slug.zip" --output "$zip"
-                echo "$slug release: ${version:-latest}" | tee -a "$GITHUB_STEP_SUMMARY"
-                ;;
-              all-plugins)
-                gh api -H 'Accept: application/vnd.github.raw' "repos/woocommerce/all-plugins/contents/product-packages/$slug/$slug.zip" > "$zip"
-                ;;
-              wordpress.org)
-                curl --fail --silent --show-error --location --proto '=https' --output "$zip" "https://downloads.wordpress.org/plugin/$slug.latest-stable.zip"
-                ;;
-              *)
-                echo "::error::Unknown source for $slug."
-                exit 1
-                ;;
-            esac
-            unzip -q "$zip" -d "$plugins_dir"
-            test -f "$plugins_dir/$slug/$slug.php"
-            if [[ $(jq -r .hookOnly <<< "$plugin") != true ]]; then
-              dir_env=$(jq -r .dirEnv <<< "$plugin")
-              require_env=$(jq -r .requireEnv <<< "$plugin")
-              [[ -z "$dir_env" ]] || echo "$dir_env=$plugins_dir/$slug" >> "$GITHUB_ENV"
-              # Makes the tests that need the plugin fail, not skip, when it did not load.
-              [[ -z "$require_env" ]] || echo "$require_env=1" >> "$GITHUB_ENV"
-            fi
-            echo "Downloaded $slug."
-          done < <(jq -c --arg suite "$SUITE" '.[] | select(.suites | index($suite))' <<< "$PLUGINS")
+        uses: $/actions/download-private-plugins
+        with:
+          token: ${{ secrets.ORG_DOWNLOADS }}
+          suite: ${{ inputs.suite }}
+          plugins: ${{ toJSON(fromJSON(needs.config.outputs.json).privatePlugins) }}
+          versions: ${{ toJSON(matrix.pluginVersions) }}
 
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

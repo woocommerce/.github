@@ -1,0 +1,92 @@
+name: Download private plugins
+description: Download the config.woo.privatePlugins entries for one test suite. Run it before checkout, so the token never reaches a step that runs repository or dependency code.
+
+# Later steps get WOO_PRIVATE_PLUGIN_ZIPS_DIR (<slug>.zip) and WOO_PRIVATE_PLUGINS_DIR (<slug>/,
+# unzipped), plus each plugin's dirEnv and requireEnv unless it is hookOnly.
+#
+#   - name: Download private plugins
+#     uses: woocommerce/.github/actions/download-private-plugins@<commit SHA>
+#     with:
+#       token: ${{ secrets.ORG_DOWNLOADS }}
+#       suite: e2e
+#       plugins: ${{ toJSON(fromJSON(needs.config.outputs.json).privatePlugins) }}
+
+inputs:
+  token:
+    description: Reads the private plugin repositories and woocommerce/all-plugins.
+    required: true
+  suite:
+    description: Download only the entries whose suites list this one (unit, integration or e2e).
+    required: true
+  plugins:
+    description: The normalized config.woo.privatePlugins array, as JSON.
+    required: true
+  versions:
+    description: Release per slug as a JSON object (a PHPUnit leg's pluginVersions); a missing slug gets the latest release.
+    required: false
+    default: '{}'
+
+runs:
+  using: composite
+  steps:
+    - name: Download private plugins
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        SUITE: ${{ inputs.suite }}
+        PLUGINS: ${{ inputs.plugins }}
+        VERSIONS: ${{ inputs.versions }}
+      run: |
+        plugins_dir="$RUNNER_TEMP/plugins"
+        zips_dir="$RUNNER_TEMP/plugin-zips"
+        mkdir -p "$plugins_dir" "$zips_dir"
+        {
+          echo "WOO_PRIVATE_PLUGINS_DIR=$plugins_dir"
+          echo "WOO_PRIVATE_PLUGIN_ZIPS_DIR=$zips_dir"
+        } >> "$GITHUB_ENV"
+        while IFS= read -r plugin; do
+          slug=$(jq -er '.slug | select(test("^[a-z0-9]+(-[a-z0-9]+)*$"))' <<< "$plugin")
+          zip="$zips_dir/$slug.zip"
+          # The leg's release of this plugin: empty for the latest, a tag, or `<x.y.z` for the
+          # newest release older than x.y.z (config.woo.phpunit.legs[].plugins).
+          version=$(jq -r --arg slug "$slug" '.[$slug] // ""' <<< "$VERSIONS")
+          source=$(jq -r .source <<< "$plugin")
+          if [[ -n "$version" && "$source" != release ]]; then
+            echo "::error::$slug: a leg can pin only release plugins."
+            exit 1
+          fi
+          if [[ "$version" == '<'* ]]; then
+            minimum=${version#<}
+            version=$(gh release list --repo "woocommerce/$slug" --limit 100 --json tagName --jq '.[].tagName' |
+              grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | { cat; echo "$minimum"; } | sort -V -u |
+              awk -v minimum="$minimum" '$0 == minimum { print previous; exit } { previous = $0 }')
+            [[ -n "$version" ]] || { echo "::error::Found no $slug release older than $minimum."; exit 1; }
+          fi
+          [[ -z "$version" || "$version" =~ ^[0-9A-Za-z][0-9A-Za-z.+-]*$ ]] || { echo "::error::Invalid $slug release '$version'."; exit 1; }
+          case $source in
+            release)
+              gh release download ${version:+"$version"} --repo "woocommerce/$slug" --pattern "$slug.zip" --output "$zip"
+              echo "$slug release: ${version:-latest}" | tee -a "$GITHUB_STEP_SUMMARY"
+              ;;
+            all-plugins)
+              gh api -H 'Accept: application/vnd.github.raw' "repos/woocommerce/all-plugins/contents/product-packages/$slug/$slug.zip" > "$zip"
+              ;;
+            wordpress.org)
+              curl --fail --silent --show-error --location --proto '=https' --output "$zip" "https://downloads.wordpress.org/plugin/$slug.latest-stable.zip"
+              ;;
+            *)
+              echo "::error::Unknown source for $slug."
+              exit 1
+              ;;
+          esac
+          unzip -q "$zip" -d "$plugins_dir"
+          test -f "$plugins_dir/$slug/$slug.php"
+          if [[ $(jq -r .hookOnly <<< "$plugin") != true ]]; then
+            dir_env=$(jq -r .dirEnv <<< "$plugin")
+            require_env=$(jq -r .requireEnv <<< "$plugin")
+            [[ -z "$dir_env" ]] || echo "$dir_env=$plugins_dir/$slug" >> "$GITHUB_ENV"
+            # Makes the tests that need the plugin fail, not skip, when it did not load.
+            [[ -z "$require_env" ]] || echo "$require_env=1" >> "$GITHUB_ENV"
+          fi
+          echo "Downloaded $slug."
+        done < <(jq -c --arg suite "$SUITE" '.[] | select(.suites | index($suite))' <<< "$PLUGINS")

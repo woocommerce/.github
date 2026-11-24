@@ -29,6 +29,7 @@ inputs:
 runs:
   using: composite
   steps:
+    # Only this step gets the token, and it runs nothing from the downloads.
     - name: Download private plugins
       shell: bash
       env:
@@ -37,13 +38,10 @@ runs:
         PLUGINS: ${{ inputs.plugins }}
         VERSIONS: ${{ inputs.versions }}
       run: |
-        plugins_dir="$RUNNER_TEMP/plugins"
         zips_dir="$RUNNER_TEMP/plugin-zips"
-        mkdir -p "$plugins_dir" "$zips_dir"
-        {
-          echo "WOO_PRIVATE_PLUGINS_DIR=$plugins_dir"
-          echo "WOO_PRIVATE_PLUGIN_ZIPS_DIR=$zips_dir"
-        } >> "$GITHUB_ENV"
+        mkdir -p "$zips_dir"
+        jq -e --arg suite "$SUITE" '[.[] | select(.suites | index($suite)) | .slug] | length == (unique | length)' <<< "$PLUGINS" > /dev/null ||
+          { echo "::error::config.woo.privatePlugins lists a plugin twice for the $SUITE suite."; exit 1; }
         while IFS= read -r plugin; do
           slug=$(jq -er '.slug | select(test("^[a-z0-9]+(-[a-z0-9]+)*$"))' <<< "$plugin")
           zip="$zips_dir/$slug.zip"
@@ -79,14 +77,35 @@ runs:
               exit 1
               ;;
           esac
-          unzip -q "$zip" -d "$plugins_dir"
+          echo "Downloaded $slug."
+        done < <(jq -c --arg suite "$SUITE" '.[] | select(.suites | index($suite))' <<< "$PLUGINS")
+
+    - name: Unpack private plugins
+      shell: bash
+      env:
+        SUITE: ${{ inputs.suite }}
+        PLUGINS: ${{ inputs.plugins }}
+      run: |
+        plugins_dir="$RUNNER_TEMP/plugins"
+        zips_dir="$RUNNER_TEMP/plugin-zips"
+        mkdir -p "$plugins_dir"
+        {
+          echo "WOO_PRIVATE_PLUGINS_DIR=$plugins_dir"
+          echo "WOO_PRIVATE_PLUGIN_ZIPS_DIR=$zips_dir"
+        } >> "$GITHUB_ENV"
+        while IFS= read -r plugin; do
+          slug=$(jq -er '.slug | select(test("^[a-z0-9]+(-[a-z0-9]+)*$"))' <<< "$plugin")
+          # Never overwrite, and keep unzip off stdin: a prompt would read the rest of the plugin list.
+          unzip -q -n "$zips_dir/$slug.zip" -d "$plugins_dir" < /dev/null
           test -f "$plugins_dir/$slug/$slug.php"
           if [[ $(jq -r .hookOnly <<< "$plugin") != true ]]; then
             dir_env=$(jq -r .dirEnv <<< "$plugin")
             require_env=$(jq -r .requireEnv <<< "$plugin")
+            for name in "$dir_env" "$require_env"; do
+              [[ -z "$name" || "$name" =~ ^[A-Z][A-Z0-9_]*$ ]] || { echo "::error::$slug: dirEnv and requireEnv must be environment variable names."; exit 1; }
+            done
             [[ -z "$dir_env" ]] || echo "$dir_env=$plugins_dir/$slug" >> "$GITHUB_ENV"
             # Makes the tests that need the plugin fail, not skip, when it did not load.
             [[ -z "$require_env" ]] || echo "$require_env=1" >> "$GITHUB_ENV"
           fi
-          echo "Downloaded $slug."
         done < <(jq -c --arg suite "$SUITE" '.[] | select(.suites | index($suite))' <<< "$PLUGINS")

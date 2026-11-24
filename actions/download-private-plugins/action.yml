@@ -43,7 +43,7 @@ runs:
         jq -e --arg suite "$SUITE" '[.[] | select(.suites | index($suite)) | .slug] | length == (unique | length)' <<< "$PLUGINS" > /dev/null ||
           { echo "::error::config.woo.privatePlugins lists a plugin twice for the $SUITE suite."; exit 1; }
         while IFS= read -r plugin; do
-          slug=$(jq -er '.slug | select(test("^[a-z0-9]+(-[a-z0-9]+)*$"))' <<< "$plugin")
+          slug=$(jq -er '.slug | select(test("\\A[a-z0-9]+(-[a-z0-9]+)*\\z"))' <<< "$plugin")
           zip="$zips_dir/$slug.zip"
           # The leg's release of this plugin: empty for the latest, a tag, or `<x.y.z` for the
           # newest release older than x.y.z (config.woo.phpunit.legs[].plugins).
@@ -94,10 +94,16 @@ runs:
           echo "WOO_PRIVATE_PLUGIN_ZIPS_DIR=$zips_dir"
         } >> "$GITHUB_ENV"
         while IFS= read -r plugin; do
-          slug=$(jq -er '.slug | select(test("^[a-z0-9]+(-[a-z0-9]+)*$"))' <<< "$plugin")
-          # Never overwrite, and keep unzip off stdin: a prompt would read the rest of the plugin list.
-          unzip -q -n "$zips_dir/$slug.zip" -d "$plugins_dir" < /dev/null
-          test -f "$plugins_dir/$slug/$slug.php"
+          slug=$(jq -er '.slug | select(test("\\A[a-z0-9]+(-[a-z0-9]+)*\\z"))' <<< "$plugin")
+          zip="$zips_dir/$slug.zip"
+          [[ -z $(unzip -Z1 "$zip" | sort | uniq -d) ]] || { echo "::error::$slug.zip has duplicate entries."; exit 1; }
+          # Each archive unpacks on its own, and only its <slug>/ folder moves in, so it can't add
+          # files to another plugin. unzip stays off stdin: a prompt would read the plugin list.
+          staging=$(mktemp -d "$RUNNER_TEMP/plugin.XXXXXX")
+          unzip -q "$zip" -d "$staging" < /dev/null
+          [[ -d "$staging/$slug" && ! -L "$staging/$slug" && -f "$staging/$slug/$slug.php" && ! -e "$plugins_dir/$slug" ]] ||
+            { echo "::error::$slug.zip needs a $slug/ folder with $slug.php."; exit 1; }
+          mv "$staging/$slug" "$plugins_dir/$slug"
           if [[ $(jq -r .hookOnly <<< "$plugin") != true ]]; then
             dir_env=$(jq -r .dirEnv <<< "$plugin")
             require_env=$(jq -r .requireEnv <<< "$plugin")

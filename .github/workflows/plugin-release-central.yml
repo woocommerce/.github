@@ -89,6 +89,14 @@ jobs:
                   .reviewDecision == "APPROVED"
                 ' <<< "$state" > /dev/null ||
                   { echo "::error::The release PR head must match, be approved and meet the trunk merge requirements."; exit 1; }
+                # reviewDecision covers the PR, not a commit: also require a reviewer's latest review to approve this head.
+                gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$pr_number/reviews?per_page=100" |
+                  jq -es --arg sha "$sha" '
+                    [.[][] | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED")] |
+                    group_by(.user.id) | map(max_by(.submitted_at)) |
+                    any(.state == "APPROVED" and .commit_id == $sha)
+                  ' > /dev/null ||
+                  { echo "::error::No reviewer's latest review approves the release PR at $sha."; exit 1; }
 
                 # Called, this job is named "<caller job> / Check versions".
                 for (( attempt=1; attempt<GITHUB_RUN_ATTEMPT; attempt++ )); do
@@ -262,7 +270,9 @@ jobs:
               id: release_identity
               run: |
                 test "$GH_RELEASE_COMMIT" = "$CANDIDATE_SHA"
-                mv -fT "$RUNNER_TEMP/release-candidate/$RELEASE_ARCHIVE" "$RELEASE_ARCHIVE"
+                candidate="$RUNNER_TEMP/release-candidate/$RELEASE_ARCHIVE"
+                [[ -f "$candidate" && ! -L "$candidate" ]]
+                mv -fT "$candidate" "$RELEASE_ARCHIVE"
                 printf '%s  %s\n' "$CANDIDATE_SHA256" "$RELEASE_ARCHIVE" | sha256sum --check --strict -
                 test -n "$RELEASE_VERSION"
                 test -s "$RELEASE_ARCHIVE"

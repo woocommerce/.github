@@ -86,9 +86,9 @@ jobs:
                 jq -e --arg sha "$sha" '
                   .headRefOid == $sha and
                   (.mergeStateStatus == "CLEAN" or .mergeStateStatus == "UNSTABLE") and
-                  (.reviewDecision == "" or .reviewDecision == "APPROVED")
+                  .reviewDecision == "APPROVED"
                 ' <<< "$state" > /dev/null ||
-                  { echo "::error::The release PR head must match and meet the trunk merge requirements."; exit 1; }
+                  { echo "::error::The release PR head must match, be approved and meet the trunk merge requirements."; exit 1; }
 
                 # Called, this job is named "<caller job> / Check versions".
                 for (( attempt=1; attempt<GITHUB_RUN_ATTEMPT; attempt++ )); do
@@ -233,7 +233,8 @@ jobs:
               id: tools
               uses: $/actions/plugin-release-tools
 
-            - name: Require a release candidate ID
+            # The build job ran plugin code, so check its outputs before using them.
+            - name: Check the release candidate identity
               env:
                 CANDIDATE_ID: ${{ needs.build_project.outputs.artifact-id }}
               run: |
@@ -241,12 +242,17 @@ jobs:
                   echo "A single release candidate artifact ID is required." >&2
                   exit 1
                 fi
+                if [[ ! "$CANDIDATE_SHA" =~ ^[a-f0-9]{40}$ || ! "$CANDIDATE_SHA256" =~ ^[a-f0-9]{64}$ ||
+                      ! "$RELEASE_ARCHIVE" =~ ^[a-z0-9]+(-[a-z0-9]+)*\.zip$ ]]; then
+                  echo "The build reported an invalid source SHA, SHA-256 or archive name." >&2
+                  exit 1
+                fi
 
             - name: Download the release artifact
               uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
               with:
                 artifact-ids: ${{ needs.build_project.outputs.artifact-id }}
-                path: .
+                path: ${{ runner.temp }}/release-candidate
 
             - name: Install tools
               run: |
@@ -256,7 +262,8 @@ jobs:
               id: release_identity
               run: |
                 test "$GH_RELEASE_COMMIT" = "$CANDIDATE_SHA"
-                printf '%s  %s\n' "$CANDIDATE_SHA256" "$RELEASE_ARCHIVE" | sha256sum --check -
+                mv -fT "$RUNNER_TEMP/release-candidate/$RELEASE_ARCHIVE" "$RELEASE_ARCHIVE"
+                printf '%s  %s\n' "$CANDIDATE_SHA256" "$RELEASE_ARCHIVE" | sha256sum --check --strict -
                 test -n "$RELEASE_VERSION"
                 test -s "$RELEASE_ARCHIVE"
                 jq -e --arg version "$RELEASE_VERSION" '.version == $version' package.json > /dev/null
@@ -267,6 +274,8 @@ jobs:
             - name: Release
               env:
                 GH_TOKEN: ${{ github.token }}
+                # Don't let gh pick the repository from the checkout's git remotes.
+                GH_REPO: ${{ github.repository }}
                 RELEASE_TOOLS: ${{ steps.tools.outputs.directory }}
               run: bash "$RELEASE_TOOLS/release.sh"
 

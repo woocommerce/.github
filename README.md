@@ -20,7 +20,7 @@ Plugin repositories keep the event triggers, required checks, and repository set
 During the move to central deployment, a plugin's `release-start.yml` and `ci-release.yml` call `plugin-release-start-central.yml` and `plugin-release-central.yml` instead. The central release workflow then holds the release credentials, so these callers forward no secrets except `ORG_DOWNLOADS` for E2E:
 
 - Start Release (central deploy) bumps the versions and compiles the changelog on the dispatched trunk commit. Instead of pushing the branch, it uploads them as a `release-patch-<run attempt>` artifact (`release.patch` and `release.json`).
-- Publish release (central deploy) names the build artifact `release-candidate-<commit>-<run attempt>` and the release job `Release (<commit> <SHA-256>)`, then stops after creating the GitHub release. It doesn't deploy, merge, roll the milestone or send Slack notifications.
+- Publish release (central deploy) requires an approved release PR. It names the build artifact `release-candidate-<commit>-<run attempt>` and the release job `Release (<commit> <SHA-256>)`, then stops after creating the GitHub release. It doesn't deploy, merge, roll the milestone or send Slack notifications.
 
 The central workflows repeat the original jobs up to the GitHub release. Until the originals are removed, apply release workflow changes to both.
 

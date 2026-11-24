@@ -1,0 +1,275 @@
+name: Publish release (central deploy)
+
+# Central-deploy counterpart of plugin-release.yml. It resolves the one ready release pull request
+# and pins its commit, runs the plugin's checks on it, builds the production ZIP once, verifies it
+# with Plugin Check and E2E, and creates the GitHub release. It stops there: the central release
+# workflow deploys that archive, merges the release pull request and closes the milestone. The
+# caller keeps the workflow_dispatch input, runs from trunk and holds the concurrency group. It
+# forwards no secrets beyond ORG_DOWNLOADS for E2E; don't use `secrets: inherit`.
+#
+#   publish:
+#     name: Publish
+#     permissions:
+#       actions: read
+#       checks: read
+#       contents: write
+#       pull-requests: read
+#       statuses: read
+#     uses: woocommerce/.github/.github/workflows/plugin-release-central.yml@<commit SHA>
+#     with:
+#       branch: ${{ inputs.branch }}
+#     secrets:
+#       ORG_DOWNLOADS: ${{ secrets.ORG_DOWNLOADS }}
+
+on:
+  workflow_call:
+    inputs:
+      # The release branch, release/X.Y.Z.
+      branch:
+        type: string
+        required: true
+    secrets:
+      # Private plugin downloads for E2E.
+      ORG_DOWNLOADS:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+
+    # Release jobs check out a branch SHA without saving dependency caches in trunk.
+    check-versions:
+        name: Check versions
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        outputs:
+          release_version: ${{ steps.candidate.outputs.version }}
+          commit: ${{ steps.candidate.outputs.commit }}
+          pull-request: ${{ steps.candidate.outputs.pull-request }}
+          config: ${{ steps.config.outputs.json }}
+
+        permissions:
+          actions: read
+          checks: read
+          contents: read
+          pull-requests: read
+          statuses: read
+        steps:
+
+            - name: Resolve release PR and commit
+              id: candidate
+              env:
+                GH_TOKEN: ${{ github.token }}
+                RELEASE_BRANCH: ${{ inputs.branch }}
+              run: |
+                if [[ "$GITHUB_REF" != refs/heads/trunk || ! "$RELEASE_BRANCH" =~ ^release/[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                  echo "::error::Run this workflow from trunk with a release/X.Y.Z branch."
+                  exit 1
+                fi
+
+                pr=$(gh api --method GET "repos/$GITHUB_REPOSITORY/pulls" \
+                  -f state=open -f base=trunk -f "head=${GITHUB_REPOSITORY_OWNER}:$RELEASE_BRANCH" |
+                  jq -e --arg repo "$GITHUB_REPOSITORY" --arg ref "$RELEASE_BRANCH" \
+                    '[.[] | select(.head.repo.full_name == $repo and .head.ref == $ref and .draft == false)] |
+                     if length == 1 then .[0] else error("Expected one open release PR") end')
+                sha=$(jq -er '.head.sha | select(test("^[a-f0-9]{40}$"))' <<< "$pr")
+                pr_number=$(jq -er .number <<< "$pr")
+                gh pr checks "$pr_number" --repo "$GITHUB_REPOSITORY" --required
+                for attempt in 1 2 3; do
+                  state=$(gh pr view "$pr_number" --repo "$GITHUB_REPOSITORY" --json headRefOid,mergeStateStatus,reviewDecision)
+                  if [[ $(jq -r .mergeStateStatus <<< "$state") != UNKNOWN || "$attempt" == 3 ]]; then
+                    break
+                  fi
+                  sleep 3
+                done
+                jq -e --arg sha "$sha" '
+                  .headRefOid == $sha and
+                  (.mergeStateStatus == "CLEAN" or .mergeStateStatus == "UNSTABLE") and
+                  (.reviewDecision == "" or .reviewDecision == "APPROVED")
+                ' <<< "$state" > /dev/null ||
+                  { echo "::error::The release PR head must match and meet the trunk merge requirements."; exit 1; }
+
+                # Called, this job is named "<caller job> / Check versions".
+                for (( attempt=1; attempt<GITHUB_RUN_ATTEMPT; attempt++ )); do
+                  original=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$attempt/jobs?per_page=100" \
+                    --jq '.jobs[] | select(.name | endswith(" / Check versions")) | .conclusion')
+                  if [[ "$original" == success ]]; then
+                    echo "::error::Re-run failed jobs from the attempt that pinned the release commit and ZIP."
+                    exit 1
+                  fi
+                done
+                {
+                  echo "commit=$sha"
+                  echo "pull-request=$pr_number"
+                  echo "version=${RELEASE_BRANCH#release/}"
+                } >> "$GITHUB_OUTPUT"
+                echo "Publishing \`$RELEASE_BRANCH\` at \`$sha\`." >> "$GITHUB_STEP_SUMMARY"
+
+            - name: Checkout trunk metadata
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                persist-credentials: false
+
+            - name: Checkout release commit
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                ref: ${{ steps.candidate.outputs.commit }}
+                path: release-candidate
+                persist-credentials: false
+
+            # Capabilities and deployment settings come from trunk. Version checks read the candidate.
+            - name: Read plugin metadata
+              id: config
+              uses: $/actions/read-plugin-config
+              with:
+                checkout: 'false'
+
+            - name: Load release tools
+              id: tools
+              uses: $/actions/plugin-release-tools
+
+            - name: Check versions
+              working-directory: release-candidate
+              env:
+                RELEASE_TOOLS: ${{ steps.tools.outputs.directory }}
+                RELEASE_VERSION: ${{ steps.candidate.outputs.version }}
+                CONFIG_READER: ${{ steps.config.outputs.reader }}
+              run: bash "$RELEASE_TOOLS/check_versions.sh"
+
+    php-lint:
+        name: PHP
+        needs: check-versions
+        uses: ./.github/workflows/plugin-php-lint.yml
+        with:
+          checkout-ref: ${{ needs.check-versions.outputs.commit }}
+
+    js-lint:
+        if: ${{ fromJSON(needs.check-versions.outputs.config).capabilities.js }}
+        name: JS Linting
+        needs: check-versions
+        uses: ./.github/workflows/plugin-js-lint.yml
+        with:
+          checkout-ref: ${{ needs.check-versions.outputs.commit }}
+
+    php-tests:
+        if: ${{ fromJSON(needs.check-versions.outputs.config).capabilities.phpunit }}
+        name: PHP
+        needs: [check-versions, php-lint]
+        uses: ./.github/workflows/plugin-phpunit.yml
+        with:
+          checkout-ref: ${{ needs.check-versions.outputs.commit }}
+
+    build_project:
+        if: ${{ !failure() && !cancelled() }}
+        name: Package
+        needs: [check-versions, php-tests, php-lint, js-lint]
+        uses: ./.github/workflows/plugin-build-zip.yml
+        with:
+          checkout-ref: ${{ needs.check-versions.outputs.commit }}
+          # Named after the commit it built, so the central workflow can find this run for the approved
+          # PR head.
+          artifact-name: release-candidate-${{ needs.check-versions.outputs.commit }}-${{ github.run_attempt }}
+
+    e2e-tests:
+        if: ${{ fromJSON(needs.check-versions.outputs.config).capabilities.e2e }}
+        name: E2E tests
+        needs: [check-versions, build_project]
+        permissions:
+          contents: read
+          actions: read
+        uses: ./.github/workflows/plugin-e2e.yml
+        with:
+          artifact-id: ${{ needs.build_project.outputs.artifact-id }}
+          source-sha: ${{ needs.build_project.outputs.source-sha }}
+          sha256: ${{ needs.build_project.outputs.sha256 }}
+          checkout-ref: ${{ needs.check-versions.outputs.commit }}
+          trusted-plugins: true
+        secrets:
+          ORG_DOWNLOADS: ${{ secrets.ORG_DOWNLOADS }}
+
+    check-release-archive:
+        if: ${{ fromJSON(needs.check-versions.outputs.config).capabilities.pluginCheck }}
+        name: Check release archive
+        needs: [build_project, check-versions]
+        permissions:
+          contents: read
+          actions: read
+        uses: ./.github/workflows/plugin-check.yml
+        with:
+          artifact-id: ${{ needs.build_project.outputs.artifact-id }}
+          source-sha: ${{ needs.build_project.outputs.source-sha }}
+          expected-source-sha: ${{ needs.check-versions.outputs.commit }}
+          sha256: ${{ needs.build_project.outputs.sha256 }}
+
+    release:
+        # Every check the plugin has must pass; checks it does not have are skipped.
+        if: ${{ !failure() && !cancelled() && needs.build_project.result == 'success' }}
+        # The name records the released commit and SHA-256. This job runs no plugin code, so the
+        # central workflow relies on it to tie the release asset to the approved commit.
+        name: Release (${{ needs.check-versions.outputs.commit }} ${{ needs.build_project.outputs.sha256 }})
+        needs: [ check-release-archive, e2e-tests, build_project, check-versions ]
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        permissions:
+          contents: write
+          actions: read
+        env:
+          GH_RELEASE_COMMIT: ${{ needs.check-versions.outputs.commit }}
+          RELEASE_VERSION: ${{ needs.check-versions.outputs.release_version }}
+          RELEASE_ARCHIVE: ${{ needs.build_project.outputs.slug }}.zip
+          CANDIDATE_SHA: ${{ needs.build_project.outputs.source-sha }}
+          CANDIDATE_SHA256: ${{ needs.build_project.outputs.sha256 }}
+
+        steps:
+
+            - name: Checkout repository
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                ref: ${{ needs.check-versions.outputs.commit }}
+                persist-credentials: false
+
+            - name: Load release tools
+              id: tools
+              uses: $/actions/plugin-release-tools
+
+            - name: Require a release candidate ID
+              env:
+                CANDIDATE_ID: ${{ needs.build_project.outputs.artifact-id }}
+              run: |
+                if [[ ! "$CANDIDATE_ID" =~ ^[1-9][0-9]*$ ]]; then
+                  echo "A single release candidate artifact ID is required." >&2
+                  exit 1
+                fi
+
+            - name: Download the release artifact
+              uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+              with:
+                artifact-ids: ${{ needs.build_project.outputs.artifact-id }}
+                path: .
+
+            - name: Install tools
+              run: |
+                sudo apt-get install jq
+
+            - name: Verify release artifact
+              id: release_identity
+              run: |
+                test "$GH_RELEASE_COMMIT" = "$CANDIDATE_SHA"
+                printf '%s  %s\n' "$CANDIDATE_SHA256" "$RELEASE_ARCHIVE" | sha256sum --check -
+                test -n "$RELEASE_VERSION"
+                test -s "$RELEASE_ARCHIVE"
+                jq -e --arg version "$RELEASE_VERSION" '.version == $version' package.json > /dev/null
+                echo "archive=$RELEASE_ARCHIVE" >> "$GITHUB_OUTPUT"
+                echo "sha256=$CANDIDATE_SHA256" >> "$GITHUB_OUTPUT"
+                echo "version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+
+            - name: Release
+              env:
+                GH_TOKEN: ${{ github.token }}
+                RELEASE_TOOLS: ${{ steps.tools.outputs.directory }}
+              run: bash "$RELEASE_TOOLS/release.sh"
+
+            - name: Hand over to the central release workflow
+              run: |
+                echo "Released \`${RELEASE_ARCHIVE}\` for ${RELEASE_VERSION} (SHA-256 \`${CANDIDATE_SHA256}\`). The central release workflow deploys it, merges the release PR and closes the milestone." >> "$GITHUB_STEP_SUMMARY"

@@ -34,12 +34,19 @@ class RuntimeVersionsTest(unittest.TestCase):
             stack = {"wordpress_version": "7.2-RC3", "woocommerce_version": "11.4.0-rc.1", "php_version": "8.4.28"}
             (root / "qit-woo-api-results.txt").write_text("WooCommerce 11.4.0-rc.1 has no released line of its own.\n")
             (root / "woo-api.runtime.json").write_text(json.dumps(stack))
+            (root / "woo-api.record.json").write_text(json.dumps({**stack, "php_version": "8.4"}))
             (root / "woo-e2e.runtime.json").write_text(json.dumps(stack))
             (root / "woo-e2e-stable.runtime.json").write_text(json.dumps({**stack, "woocommerce_version": "11.3.1"}))
             self.assertEqual(
                 self.read_versions(directory),
                 "WordPress 7.2-RC3 / WooCommerce 11.4.0-rc.1 / PHP 8.4.28 (Woo API); "
                 "WordPress 7.2-RC3 / WooCommerce 11.3.1 / PHP 8.4.28 (Woo E2E stable retry)",
+            )
+            (root / "woo-e2e-stable.runtime.json").unlink()
+            (root / "qit-woo-e2e-stable-results.txt").touch()
+            self.assertEqual(
+                self.read_versions(directory),
+                "WordPress 7.2-RC3 / WooCommerce 11.4.0-rc.1 / PHP 8.4.28 (Woo API)",
             )
 
     def test_missing_and_unreadable_results_produce_no_versions(self):
@@ -74,7 +81,9 @@ class RuntimeVersionsTest(unittest.TestCase):
             subprocess.run(["bash", CAPTURE, "activation"], env=env, check=True)
             failed = subprocess.run(["bash", CAPTURE, "woo-api"], env={**env, "FAIL_CAPTURE": "1"})
             self.assertEqual(failed.returncode, 1)
-            self.assertEqual((root / "stopped").read_text(), "qitenv123\nqitenv123\n")
+            (results / "qit-woo-e2e-results.txt").touch()
+            subprocess.run(["bash", CAPTURE, "woo-e2e"], env=env, check=True)
+            self.assertEqual((root / "stopped").read_text(), "qitenv123\nqitenv123\n--all\n")
             self.assertEqual(
                 self.read_versions(results),
                 "WordPress 7.2-RC3 / WooCommerce 11.4.0-rc.1 / PHP 8.4.28 (Activation)",

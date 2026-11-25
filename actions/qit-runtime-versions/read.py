@@ -17,8 +17,10 @@ VERSION_FIELDS = ("wordpress_version", "woocommerce_version", "php_version")
 
 def resolved_versions(directory):
     environments = {}
-    retry_record = directory / "woo-e2e-stable.runtime.json"
-    has_retry = retry_record.is_file() and retry_record.stat().st_size > 0
+    has_retry = any(
+        (directory / name).is_file()
+        for name in ("woo-e2e-stable.runtime.json", "qit-woo-e2e-stable-results.txt")
+    )
 
     def add(record, key):
         versions = tuple(record.get(field) for field in VERSION_FIELDS)
@@ -32,7 +34,7 @@ def resolved_versions(directory):
             continue
         if not isinstance(result, dict):
             continue
-        if path.name.endswith((".runtime.json", ".record.json")):
+        if path.name.endswith(".runtime.json"):
             test = path.name.split(".", 1)[0]
             # A retry replaces the first Woo E2E result if its package could not cover the requested version.
             if test == "woo-e2e" and has_retry:

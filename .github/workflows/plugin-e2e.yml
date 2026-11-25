@@ -1,7 +1,9 @@
 name: Acceptance tests with Docker
 
 # Playwright on wp-env against the verified production ZIP, through the plugin's bin/e2e.sh; one
-# job per project in config.woo.e2e.projects.
+# job per project in config.woo.e2e.projects. Trusted runs download the config.woo.privatePlugins
+# entries with the e2e suite before checkout; bin/e2e.sh prepare gets them in
+# $WOO_PRIVATE_PLUGIN_ZIPS_DIR and $WOO_PRIVATE_PLUGINS_DIR, never the token.
 #
 #   e2e-tests:
 #     needs: build
@@ -47,8 +49,8 @@ on:
       php-version:
         type: string
         default: ''
-      # Integration plugins that need ORG_DOWNLOADS (config.woo.e2e.privatePlugins) run only
-      # for trusted callers; specs tagged @integration are skipped otherwise.
+      # Private plugins (config.woo.e2e.privatePlugins) are downloaded only for trusted
+      # callers; specs tagged @integration are skipped otherwise.
       trusted-plugins:
         type: boolean
         default: false
@@ -94,6 +96,27 @@ jobs:
 
     steps:
 
+      # An e2e entry in config.woo.privatePlugins turns e2e.privatePlugins on. Set on its own, it is
+      # the old setup, whose bin/hooks/e2e-prepare.sh downloaded with ORG_DOWNLOADS.
+      - name: Check the E2E private plugins
+        if: ${{ inputs.trusted-plugins && fromJSON(needs.config.result == 'skipped' && inputs.event-config || needs.config.outputs.json).e2e.privatePlugins }}
+        env:
+          PLUGINS: ${{ toJSON(fromJSON(needs.config.result == 'skipped' && inputs.event-config || needs.config.outputs.json).privatePlugins) }}
+        run: |
+          jq -e 'any(.[]; .suites | index("e2e"))' <<< "$PLUGINS" > /dev/null || {
+            echo "::error::config.woo.e2e.privatePlugins is set, but no config.woo.privatePlugins entry lists the e2e suite. bin/e2e.sh prepare no longer gets ORG_DOWNLOADS: list the plugins it needs there, and read them from \$WOO_PRIVATE_PLUGIN_ZIPS_DIR or \$WOO_PRIVATE_PLUGINS_DIR."
+            exit 1
+          }
+
+      # Before checkout, so the token never reaches a step that runs repository code.
+      - name: Download private plugins
+        if: ${{ inputs.trusted-plugins && fromJSON(needs.config.result == 'skipped' && inputs.event-config || needs.config.outputs.json).e2e.privatePlugins }}
+        uses: $/actions/download-private-plugins
+        with:
+          token: ${{ secrets.ORG_DOWNLOADS }}
+          suite: e2e
+          plugins: ${{ toJSON(fromJSON(needs.config.result == 'skipped' && inputs.event-config || needs.config.outputs.json).privatePlugins) }}
+
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -123,10 +146,8 @@ jobs:
       - name: Install Node dependencies
         run: pnpm install --frozen-lockfile
 
-      # Keep ORG_DOWNLOADS out of the dependency install step: install scripts must not see it.
       - name: Setup Environment
         env:
-          ORG_DOWNLOADS: ${{ env.RUN_INTEGRATION_TESTS == '1' && fromJSON(needs.config.result == 'skipped' && inputs.event-config || needs.config.outputs.json).e2e.privatePlugins && secrets.ORG_DOWNLOADS || '' }}
           E2E_PLUGIN_ZIP: ${{ steps.candidate.outputs.zip }}
         # With no ZIP path, `prepare` builds a ZIP from source; require the verified one instead.
         run: |

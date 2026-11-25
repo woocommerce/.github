@@ -1,0 +1,15 @@
+name: Capture the QIT runtime
+description: Read installed versions from the local test environment and stop it.
+
+inputs:
+  check:
+    description: Name of the local QIT check.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        CHECK: ${{ inputs.check }}
+      run: bash "$GITHUB_ACTION_PATH/capture.sh" "$CHECK"

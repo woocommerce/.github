@@ -1,0 +1,23 @@
+name: Read QIT runtime versions
+description: Summarize the resolved core compatibility environments from QIT results.
+
+inputs:
+  results-directory:
+    description: Directory containing the QIT results artifact.
+    required: true
+
+outputs:
+  summary:
+    description: Resolved WordPress, WooCommerce, and PHP versions for the runtime checks.
+    value: ${{ steps.versions.outputs.summary }}
+
+runs:
+  using: composite
+  steps:
+    - id: versions
+      shell: bash
+      env:
+        RESULTS_DIRECTORY: ${{ inputs.results-directory }}
+      run: |
+        summary=$(python3 "$GITHUB_ACTION_PATH/read.py" "$RESULTS_DIRECTORY")
+        printf 'summary=%s\n' "$summary" >> "$GITHUB_OUTPUT"

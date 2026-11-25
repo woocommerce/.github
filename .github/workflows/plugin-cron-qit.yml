@@ -1,8 +1,8 @@
 name: Cron QIT
 
 # The plugin's weekly QIT run on the WordPress and WooCommerce release candidates, with the full
-# set of QIT tests, and a Slack message for the outcome. Plugins without config.woo.capabilities.qit
-# skip it. The caller keeps the schedule.
+# set of QIT tests, and a Slack message with the outcome and resolved core compatibility versions.
+# Plugins without config.woo.capabilities.qit skip it. The caller keeps the schedule.
 #
 #   qit:
 #     name: QIT
@@ -70,6 +70,7 @@ jobs:
         with:
           extension: ${{ fromJSON(needs.config.outputs.json).qit.extension }}
           use-qit-action: ${{ inputs.use-qit-action }}
+          record-runtime-versions: true
           plugins: ${{ fromJSON(needs.config.outputs.json).qit.plugins }}
           artifact: 'acceptance-test-zip'
           derivative: ${{ fromJSON(needs.config.outputs.json).qit.derivativeExclude != '' && 'qit-derivative' || '' }}
@@ -86,21 +87,39 @@ jobs:
           test-malware: ${{ 'true' }}
           test-api-fuzz: ${{ fromJSON(needs.config.outputs.json).qit.apiFuzz && 'true' || 'false' }}
 
-    handle-success:
-        if: ${{ success() && needs.qit-tests.result == 'success' }}
+    notify:
+        if: ${{ !cancelled() && (failure() || needs.qit-tests.result == 'success') }}
         needs: qit-tests
-        name: Handle success
+        name: Notify Slack
         runs-on: ubuntu-latest
         timeout-minutes: 5
         permissions: {}
         env:
             SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         steps:
+            - name: Download QIT results
+              id: results
+              if: ${{ needs.qit-tests.result != 'skipped' }}
+              continue-on-error: true
+              uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+              with:
+                  name: qit-results
+                  path: qit-results
+            - name: Read resolved runtime versions
+              id: versions
+              if: steps.results.outcome == 'success'
+              continue-on-error: true
+              uses: $/actions/qit-runtime-versions
+              with:
+                  results-directory: qit-results
             - uses: $/actions/notify-slack
               with:
                   slack-channel: ${{ inputs.slack-channel }}
-                  status: success
-                  message: "Scheduled workflow <{{workflowUrl}}|{{workflow}}> with run ID <{{workflowRunUrl}}|{{runId}}> passed."
+                  status: ${{ needs.qit-tests.result == 'success' && 'success' || 'failure' }}
+                  message: >-
+                    Scheduled workflow <{{workflowUrl}}|{{workflow}}> with run ID <{{workflowRunUrl}}|{{runId}}>
+                    ${{ needs.qit-tests.result == 'success' && 'passed.' || 'failed. You can find the results in the artifacts section.' }}
+                    ${{ steps.versions.outputs.summary && format('QIT runtime versions were {0}.', steps.versions.outputs.summary) || 'QIT runtime versions were unavailable.' }}
 
     handle-cancelled:
         if: ${{ cancelled() }}
@@ -117,19 +136,3 @@ jobs:
                   slack-channel: ${{ inputs.slack-channel }}
                   status: cancelled
                   message: "Scheduled workflow <{{workflowUrl}}|{{workflow}}> with run ID <{{workflowRunUrl}}|{{runId}}> cancelled."
-
-    handle-error:
-        if: ${{ failure() }}
-        needs: qit-tests
-        name: Handle failure
-        runs-on: ubuntu-latest
-        timeout-minutes: 5
-        permissions: {}
-        env:
-            SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-        steps:
-            - uses: $/actions/notify-slack
-              with:
-                  slack-channel: ${{ inputs.slack-channel }}
-                  status: failure
-                  message: "Scheduled workflow <{{workflowUrl}}|{{workflow}}> with run ID <{{workflowRunUrl}}|{{runId}}> failed. You can find the results in the artifacts section."

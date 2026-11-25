@@ -114,6 +114,7 @@ env:
   WP_VERSION_ARG: ${{ inputs.wp-version == 'nightly' && 'rc' || ( inputs.wp-version && inputs.wp-version || 'stable' ) }}
   WC_VERSION_ARG: ${{ inputs.wc-version == 'nightly' && 'rc' || ( inputs.wc-version && inputs.wc-version || 'stable' ) }}
   ADDITIONAL_PLUGINS: ${{ inputs.test-additional-plugins && format( '--additional_plugins={0}', inputs.test-additional-plugins ) || '' }}
+  LOCAL_ADDITIONAL_PLUGINS: ${{ inputs.test-additional-plugins }}
   ACTIVATION_PLUGINS: ${{ inputs.plugins && format( '--plugin={0}', inputs.plugins ) || '' }}
   ASYNC_FLAG: ${{ !inputs.wait && '--async' || '' }}
   EXTRA_OPTIONS: ${{ inputs.options }}
@@ -538,13 +539,14 @@ jobs:
             # Do not fail when the `qit` fails, so we can annotate the results.
             shell: bash --noprofile --norc {0}
             run: |
+              IFS=', ' read -r -a additional_plugins <<< "$LOCAL_ADDITIONAL_PLUGINS"
               ./vendor/bin/qit run:woo-api \
                 "$EXTENSION_SLUG" \
                 --zip="$ZIP_FILE_PATH" \
                 --wordpress_version="$WP_VERSION_ARG" \
                 --woocommerce_version="$WC_VERSION_ARG" \
                 --php_version="$PHP_VERSION" \
-                $ADDITIONAL_PLUGINS \
+                "${additional_plugins[@]/#/--plugin=}" \
                 $REPORT_URL_OPTION \
                 $KEEP_QIT_ENV \
                 $EXTRA_OPTIONS \
@@ -574,13 +576,14 @@ jobs:
             # Do not fail when the `qit` fails, so we can annotate the results.
             shell: bash --noprofile --norc {0}
             run: |
+              IFS=', ' read -r -a additional_plugins <<< "$LOCAL_ADDITIONAL_PLUGINS"
               ./vendor/bin/qit run:woo-e2e \
                 "$EXTENSION_SLUG" \
                 --zip="$ZIP_FILE_PATH" \
                 --wordpress_version="$WP_VERSION_ARG" \
                 --woocommerce_version="$WC_VERSION_ARG" \
                 --php_version="$PHP_VERSION" \
-                $ADDITIONAL_PLUGINS \
+                "${additional_plugins[@]/#/--plugin=}" \
                 $REPORT_URL_OPTION \
                 $KEEP_QIT_ENV \
                 $EXTRA_OPTIONS \
@@ -607,13 +610,14 @@ jobs:
             # Do not fail when the `qit` fails, so we can annotate the results.
             shell: bash --noprofile --norc {0}
             run: |
+              IFS=', ' read -r -a additional_plugins <<< "$LOCAL_ADDITIONAL_PLUGINS"
               ./vendor/bin/qit run:woo-e2e \
                 "$EXTENSION_SLUG" \
                 --zip="$ZIP_FILE_PATH" \
                 --wordpress_version="$WP_VERSION_ARG" \
                 --woocommerce_version=stable \
                 --php_version="$PHP_VERSION" \
-                $ADDITIONAL_PLUGINS \
+                "${additional_plugins[@]/#/--plugin=}" \
                 $REPORT_URL_OPTION \
                 $KEEP_QIT_ENV \
                 $EXTRA_OPTIONS \

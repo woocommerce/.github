@@ -7,20 +7,26 @@ on:
       - README.md
       - .github/workflows/plugin-pr-ci.yml
       - .github/workflows/plugin-build-zip.yml
+      - .github/workflows/plugin-cron-ci.yml
+      - .github/workflows/plugin-cron-qit.yml
       - .github/workflows/plugin-e2e.yml
       - .github/workflows/plugin-js-lint.yml
       - .github/workflows/plugin-phpunit.yml
+      - .github/workflows/plugin-qit.yml
       - .github/workflows/plugin-release-smoke-test.yml
       - .github/workflows/plugin-release-start.yml
       - .github/workflows/plugin-release.yml
       - .github/workflows/validate-shared-pr-scripts.yml
+      - actions/capture-qit-runtime/**
       - actions/check-changelog/**
       - actions/check-version/**
       - actions/notify-slack/**
       - actions/plugin-release-tools/**
+      - actions/qit-runtime-versions/**
       - actions/read-plugin-config/**
       - actions/read-pr-versions/**
       - tests/pr-validation.sh
+      - tests/qit-runtime-versions.py
       - tests/release-tools.sh
 
 permissions:
@@ -51,6 +57,8 @@ jobs:
           test "$WC_VERSION" = "${wc_expected%__default__}"
       - name: Test the shared validators
         run: bash tests/pr-validation.sh
+      - name: Test QIT version reporting
+        run: python3 tests/qit-runtime-versions.py
       - name: Skip Slack with a blank channel
         uses: $/actions/notify-slack
         env:

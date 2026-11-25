@@ -33,6 +33,9 @@ on:
       use-qit-action:
         type: boolean
         default: false
+      record-runtime-versions:
+        type: boolean
+        default: false
       # Artifact with <extension>-qit.zip (config.woo.qit.derivativeExclude removed) and its
       # lineage record. When set, the security and PHP compatibility scans use it.
       derivative:
@@ -114,6 +117,7 @@ env:
   ACTIVATION_PLUGINS: ${{ inputs.plugins && format( '--plugin={0}', inputs.plugins ) || '' }}
   ASYNC_FLAG: ${{ !inputs.wait && '--async' || '' }}
   EXTRA_OPTIONS: ${{ inputs.options }}
+  KEEP_QIT_ENV: ${{ inputs.record-runtime-versions && '--keep-env' || '' }}
   # Signed report URLs stay out of public repositories' logs and artifacts.
   REPORT_URL_OPTION: ${{ github.event.repository.private && '--print-report-url' || '' }}
 
@@ -349,10 +353,18 @@ jobs:
                 --php_version="$PHP_VERSION" \
                 $REPORT_URL_OPTION \
                 $ACTIVATION_PLUGINS \
+                $KEEP_QIT_ENV \
                 $EXTRA_OPTIONS \
                 -n \
                 > ${{ github.workspace }}/qit-results/qit-activation-results.txt
               echo "exitcode=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+          - name: Record activation runtime
+            if: ${{ !cancelled() && inputs.record-runtime-versions && steps.run-activation-test.outputs.exitcode != '' }}
+            continue-on-error: true
+            uses: $/actions/capture-qit-runtime
+            with:
+              check: activation
 
           - name: Echo activation results
             if: ${{ !cancelled() && inputs.test-activation == 'true' && steps.run-activation-test.outputs.exitcode != '' }}
@@ -534,10 +546,18 @@ jobs:
                 --php_version="$PHP_VERSION" \
                 $ADDITIONAL_PLUGINS \
                 $REPORT_URL_OPTION \
+                $KEEP_QIT_ENV \
                 $EXTRA_OPTIONS \
                 -n \
                 > ${{ github.workspace }}/qit-results/qit-woo-api-results.txt
               echo "exitcode=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+          - name: Record Woo API runtime
+            if: ${{ !cancelled() && inputs.record-runtime-versions && steps.run-woo-api-tests.outputs.exitcode != '' }}
+            continue-on-error: true
+            uses: $/actions/capture-qit-runtime
+            with:
+              check: woo-api
 
           - name: Echo WC API results
             if: ${{ !cancelled() && inputs.test-woo-api == 'true' && steps.run-woo-api-tests.outputs.exitcode != '' }}
@@ -562,6 +582,7 @@ jobs:
                 --php_version="$PHP_VERSION" \
                 $ADDITIONAL_PLUGINS \
                 $REPORT_URL_OPTION \
+                $KEEP_QIT_ENV \
                 $EXTRA_OPTIONS \
                 -n \
                 > ${{ github.workspace }}/qit-results/qit-woo-e2e-results.txt
@@ -571,6 +592,13 @@ jobs:
               if grep -q 'No test package covers WooCommerce' ${{ github.workspace }}/qit-results/qit-woo-e2e-results.txt; then
                 echo "nopackage=true" >> "$GITHUB_OUTPUT"
               fi
+
+          - name: Record Woo E2E runtime
+            if: ${{ !cancelled() && inputs.record-runtime-versions && steps.run-woo-e2e-tests.outputs.exitcode != '' }}
+            continue-on-error: true
+            uses: $/actions/capture-qit-runtime
+            with:
+              check: woo-e2e
 
           # Judge the extension on stable WooCommerce, which always has a matching package.
           - name: Run WC E2E Tests on stable WooCommerce
@@ -587,10 +615,18 @@ jobs:
                 --php_version="$PHP_VERSION" \
                 $ADDITIONAL_PLUGINS \
                 $REPORT_URL_OPTION \
+                $KEEP_QIT_ENV \
                 $EXTRA_OPTIONS \
                 -n \
                 > ${{ github.workspace }}/qit-results/qit-woo-e2e-stable-results.txt
               echo "exitcode=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+          - name: Record Woo E2E stable retry runtime
+            if: ${{ !cancelled() && inputs.record-runtime-versions && steps.run-woo-e2e-stable-tests.outputs.exitcode != '' }}
+            continue-on-error: true
+            uses: $/actions/capture-qit-runtime
+            with:
+              check: woo-e2e-stable
 
           - name: Echo WC E2E results
             if: ${{ !cancelled() && inputs.test-woo-e2e == 'true' && steps.run-woo-e2e-tests.outputs.exitcode != '' }}

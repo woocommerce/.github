@@ -1,0 +1,188 @@
+name: Start Release (central deploy)
+
+# Central-deploy counterpart of plugin-release-start.yml. It bumps the versions and compiles the
+# changelog on the dispatched trunk commit like Start Release, but pushes nothing: it uploads the
+# result as a release-patch-<run attempt> artifact (release.patch and release.json). The central
+# release workflow, which holds the release credentials, checks this run and opens the release
+# branch, PR and next milestone. The caller keeps the workflow_dispatch inputs and forwards no secrets.
+# Until plugin-release-start.yml is removed, apply changes to the steps both share here too.
+#
+#   start:
+#     name: Start
+#     uses: woocommerce/.github/.github/workflows/plugin-release-start-central.yml@<commit SHA>
+#     with:
+#       version: ${{ inputs.version }}
+#       wp_version: ${{ inputs.wp_version }}
+#       wc_version: ${{ inputs.wc_version }}
+
+on:
+  workflow_call:
+    inputs:
+      # Release version (X.Y.Z).
+      version:
+        type: string
+        required: true
+      # WordPress and WooCommerce "tested up to" (X.Y); empty keeps the current value.
+      wp_version:
+        type: string
+        default: ''
+      wc_version:
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+
+    prepare-release:
+        name: Prepare release patch
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        env:
+          VERSION: ${{ inputs.version }}
+          WP_VERSION: ${{ inputs.wp_version }}
+          WC_VERSION: ${{ inputs.wc_version }}
+
+        steps:
+
+            # The patch base is the dispatched commit, which the central workflow compares with trunk.
+            - name: Checkout the dispatched commit
+              uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                ref: ${{ github.sha }}
+                persist-credentials: false
+
+            - name: Validate inputs
+              run: |
+                if [[ "$GITHUB_REF" != refs/heads/trunk ]]; then
+                  echo "::error::Run Start Release from trunk."
+                  exit 1
+                fi
+                if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                  echo "::error::Invalid version format '$VERSION'. Expected X.Y.Z."
+                  exit 1
+                fi
+                if [[ -n "$WP_VERSION" && ! "$WP_VERSION" =~ ^[0-9]+\.[0-9]+$ ]]; then
+                  echo "::error::Invalid WP version format '$WP_VERSION'. Expected X.X."
+                  exit 1
+                fi
+                if [[ -n "$WC_VERSION" && ! "$WC_VERSION" =~ ^[0-9]+\.[0-9]+$ ]]; then
+                  echo "::error::Invalid WC version format '$WC_VERSION'. Expected X.X."
+                  exit 1
+                fi
+
+            # The central workflow checks for an open release PR and an existing branch.
+            - name: Check for change files
+              run: |
+                # Ignore dotfiles: changelog/.gitkeep keeps the directory in git.
+                CHANGE_FILES=$(find changelog -maxdepth 1 -type f ! -name '.*' | wc -l)
+                if [[ "$CHANGE_FILES" -eq 0 ]]; then
+                  echo "::error::No change files under changelog/. Nothing to release."
+                  exit 1
+                fi
+                echo "Found ${CHANGE_FILES} change file(s) to compile."
+
+            - name: Set up PHP
+              uses: $/actions/setup-plugin-env
+              with:
+                php-version: '8.4'
+
+            - name: Read plugin metadata
+              id: config
+              uses: $/actions/read-plugin-config
+              with:
+                checkout: 'false'
+
+            - name: Load release tools
+              id: tools
+              uses: $/actions/plugin-release-tools
+
+            - name: Bump versions
+              env:
+                RELEASE_TOOLS: ${{ steps.tools.outputs.directory }}
+                CONFIG_READER: ${{ steps.config.outputs.reader }}
+              run: |
+                ARGS=( "$VERSION" )
+                [[ -n "$WP_VERSION" ]] && ARGS+=( --wp "$WP_VERSION" )
+                [[ -n "$WC_VERSION" ]] && ARGS+=( --wc "$WC_VERSION" )
+                bash "$RELEASE_TOOLS/update_version.sh" "${ARGS[@]}"
+
+            - name: Install PHP dependencies
+              run: composer install --prefer-dist --no-progress --no-ansi --no-interaction
+
+            # Use the PR validator over all the change files that the release will compile.
+            - name: Validate all changelog entries
+              uses: $/actions/check-changelog
+              with:
+                all: 'true'
+
+            - name: Compile changelog
+              run: |
+                # Compiles changelog/ into changelog.txt under the release version and
+                # today's date, then deletes the change files it consumed. Deliberately
+                # no --yes: in non-interactive mode that would push past a bad change
+                # file instead of stopping the release.
+                php vendor/bin/changelogger write --use-version="$VERSION" --no-interaction
+
+                echo "Compiled changelog entries for ${VERSION}:"
+                sed -n '3,/^$/p' changelog.txt
+
+            # WordPress.org reads the changelog from readme.txt (config.woo.release.readmeChangelog).
+            - name: Sync readme.txt changelog
+              if: fromJSON(steps.config.outputs.json).release.readmeChangelog
+              env:
+                RELEASE_TOOLS: ${{ steps.tools.outputs.directory }}
+              run: bash "$RELEASE_TOOLS/sync_readme_changelog.sh" "$VERSION"
+
+            - name: Commit the release changes
+              run: |
+                git config user.name "github-actions[bot]"
+                git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+                git checkout -b "release/${VERSION}"
+                git add -u
+                git commit -m "Bump version to ${VERSION}"
+
+            - name: Prepare the release patch
+              id: patch
+              run: |
+                set -o pipefail
+                BASE_SHA=$(git rev-parse HEAD~1)
+                if [[ "$BASE_SHA" != "$GITHUB_SHA" ]]; then
+                  echo "::error::The release commit must sit on the dispatched commit $GITHUB_SHA."
+                  exit 1
+                fi
+                CHANGELOG=$(git show HEAD:changelog.txt | awk -v heading="= ${VERSION} - " 'index($0, heading) == 1 && !found {found=1; next} found && /^= /{done=1} found && !done')
+                if [[ -z "$CHANGELOG" ]]; then
+                  echo "::error::changelog.txt has no entries under '= ${VERSION} - '."
+                  exit 1
+                fi
+
+                PATCH_DIR=$(mktemp -d "$RUNNER_TEMP/release-patch.XXXXXX")
+                echo "dir=$PATCH_DIR" >> "$GITHUB_OUTPUT"
+                git diff --binary --full-index --no-ext-diff --no-textconv --no-renames --no-color \
+                  "$BASE_SHA" HEAD > "$PATCH_DIR/release.patch"
+                jq -n \
+                  --arg version "$VERSION" \
+                  --arg base_sha "$BASE_SHA" \
+                  --arg wp_version "$WP_VERSION" \
+                  --arg wc_version "$WC_VERSION" \
+                  --arg changelog "$CHANGELOG" \
+                  '{version: $version, base_sha: $base_sha, wp_version: $wp_version, wc_version: $wc_version, changelog: $changelog}' \
+                  > "$PATCH_DIR/release.json"
+
+                {
+                  echo "Prepared the ${VERSION} release patch on \`${BASE_SHA}\`. The central release workflow opens the release PR."
+                  echo ""
+                  git diff --stat "$BASE_SHA" HEAD | sed 's/^/    /'
+                } >> "$GITHUB_STEP_SUMMARY"
+
+            - name: Upload the release patch
+              uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+              with:
+                name: release-patch-${{ github.run_attempt }}
+                path: |
+                  ${{ steps.patch.outputs.dir }}/release.patch
+                  ${{ steps.patch.outputs.dir }}/release.json
+                if-no-files-found: error
+                retention-days: 3

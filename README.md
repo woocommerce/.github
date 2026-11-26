@@ -17,13 +17,6 @@ Plugin repositories keep the event triggers, required checks, and repository set
 
 `Required checks`, `Check changelog`, and `Validate @version Tag` are the plugin branch protection contexts. Keep their names stable. The aggregate PR check expects each applicable job to succeed and fails on drafts.
 
-During the move to central deployment, a plugin's `release-start.yml` and `ci-release.yml` call `plugin-release-start-central.yml` and `plugin-release-central.yml` instead. The central release workflow then holds the release credentials, so these callers forward no secrets except `ORG_DOWNLOADS` for E2E:
-
-- Start Release (central deploy) bumps the versions and compiles the changelog on the dispatched trunk commit. Instead of pushing the branch, it uploads them as a `release-patch-<run attempt>` artifact (`release.patch` and `release.json`).
-- Publish release (central deploy) requires a reviewer's latest review to approve the release PR at its head commit. It names the build artifact `release-candidate-<commit>-<run attempt>` and the release job `Release (<commit> <SHA-256>)`, then stops after creating the GitHub release. It doesn't deploy, merge, roll the milestone or send Slack notifications.
-
-The central workflows repeat the original jobs up to the GitHub release. Until the originals are removed, apply release workflow changes to both.
-
 To enable Slack notifications, set `with.slack-channel` and forward `secrets.SLACK_WEBHOOK_URL` from the plugin caller. Leaving the channel blank disables delivery, including translation failure alerts. For a Slack app incoming webhook, supply a webhook URL already bound to the same channel. Legacy webhooks can use the channel supplied by the caller.
 
 Set capabilities, versions, packaging options, and release product IDs in `package.json` under `config.woo`. The [configuration action](actions/read-plugin-config/action.yml) validates those settings with the WooCommerce reader and schema from one reviewed commit. The reader runs with Bash and jq before plugin dependency installation. Repository-specific setup belongs in the documented `bin/hooks/` scripts and package commands. These run in the checkout that supplies the candidate code.

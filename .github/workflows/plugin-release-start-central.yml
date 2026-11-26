@@ -5,6 +5,7 @@ name: Start Release (central deploy)
 # result as a release-patch-<run attempt> artifact (release.patch and release.json). The central
 # release workflow, which holds the release credentials, checks this run and opens the release
 # branch, PR and next milestone. The caller keeps the workflow_dispatch inputs and forwards no secrets.
+# Until plugin-release-start.yml is removed, apply changes to the steps both share here too.
 #
 #   start:
 #     name: Start

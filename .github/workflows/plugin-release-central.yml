@@ -5,7 +5,8 @@ name: Publish release (central deploy)
 # with Plugin Check and E2E, and creates the GitHub release. It stops there: the central release
 # workflow deploys that archive, merges the release pull request and closes the milestone. The
 # caller keeps the workflow_dispatch input, runs from trunk and holds the concurrency group. It
-# forwards no secrets beyond ORG_DOWNLOADS for E2E; don't use `secrets: inherit`.
+# forwards no secrets beyond ORG_DOWNLOADS for E2E; don't use `secrets: inherit`. Its jobs repeat
+# plugin-release.yml's up to the GitHub release: until that workflow is removed, apply changes to both.
 #
 #   publish:
 #     name: Publish

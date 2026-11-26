@@ -11,8 +11,6 @@ on:
       - .github/workflows/plugin-js-lint.yml
       - .github/workflows/plugin-phpunit.yml
       - .github/workflows/plugin-release-smoke-test.yml
-      - .github/workflows/plugin-release-central.yml
-      - .github/workflows/plugin-release-start-central.yml
       - .github/workflows/plugin-release-start.yml
       - .github/workflows/plugin-release.yml
       - .github/workflows/validate-shared-pr-scripts.yml
